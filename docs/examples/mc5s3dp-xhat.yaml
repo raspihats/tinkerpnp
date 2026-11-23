@@ -47,7 +47,7 @@ drivers:
       COMMAND_CONFIRM_REGEX: '^ok.*'
       COMMAND_ERROR_REGEX: '^(error:.*|ALARM:(?!11\b).*)'   # ALARM:11 (homing required) is expected after a reset
     stop: ["!", "\u0018"]            # feed hold, then soft reset
-    firmware_notes: >-
+    notes: >-
       grblHAL $1=255 (drivers stay on once moving) and $37=0 (nothing held at power-up): Z fights a return spring.
       Machine coordinates positive ($3=7, $23=7, $22=15). Valves are aux outputs P0/P1 (COOLANT_ENABLE=0 build).
 

@@ -1,0 +1,78 @@
+# Simulated version of the MC5S3DP-XHAT machine: same geometry, no hardware. For development, tests and demos.
+# Run: tinkerpnp --config config/examples/simulated.yaml
+
+format: tinkerpnp-machine/1
+name: Simulated MC5S3DP-XHAT
+
+machine:
+  on_enable: [home]
+  on_home: [park]
+  park:
+    head: H1
+    location: {x: 1, y: 1}
+  jog:
+    safe_z: always
+
+drivers:
+  sim:
+    type: simulated
+    name: Simulated controller
+
+axes:
+  x: {type: controller, driver: sim, letter: X, soft_limits: [0, 500], feed: 8000 mm/min, acceleration: 200}
+  y: {type: controller, driver: sim, letter: Y, soft_limits: [0, 345], feed: 6000 mm/min, acceleration: 100}
+  z:
+    type: controller
+    driver: sim
+    letter: Z
+    home: 57                       # starts with both nozzles up
+    soft_limits: [0, 116]
+    safe_zone: [57, 57]
+    feed: 3000 mm/min
+  a: {type: controller, driver: sim, letter: A, kind: rotation, limit_rotation: [-180, 180], feed: 3000 deg/min}
+  b: {type: controller, driver: sim, letter: B, kind: rotation, limit_rotation: [-180, 180], feed: 3000 deg/min}
+  z_n2: {type: mapped, input: z, map: [[0, 114], [114, 0]]}
+  z_top_camera: {type: virtual}
+  rot_top_camera: {type: virtual, kind: rotation}
+
+heads:
+  H1:
+    name: Main head
+    axes: {x: x, y: y}
+    pump: pump
+    nozzles:
+      N1: {name: Nozzle 1, axes: {z: z, rotation: a}, offset: {x: 0, y: 0}, vacuum: valve1, tip: NT1, compatible_tips: [NT1]}
+      N2: {name: Nozzle 2, axes: {z: z_n2, rotation: b}, offset: {x: 33.2, y: 0}, vacuum: valve2, tip: NT2, compatible_tips: [NT2]}
+    cameras:
+      top:
+        type: simulated
+        name: Top (down-looking)
+        looking: down
+        axes: {z: z_top_camera, rotation: rot_top_camera}
+        offset: {x: 21.9, y: 20.0}
+        units_per_pixel: {x: 0.04, y: 0.04}
+    actuators: [pump, valve1, valve2]
+
+nozzle_tips:
+  NT1: {name: Nozzle tip 1, max_part_diameter: 20, max_part_height: 5}
+  NT2: {name: Nozzle tip 2, max_part_diameter: 20, max_part_height: 5}
+
+actuators:
+  pump: {type: simulated, name: Vacuum pump, on_enable: false, on_disable: false}
+  valve1: {type: simulated, name: Valve 1 (N1 vacuum), on_enable: false, on_disable: false}
+  valve2: {type: simulated, name: Valve 2 (N2 vacuum), on_enable: false, on_disable: false}
+
+cameras:
+  bottom:
+    type: simulated
+    name: Bottom (up-looking)
+    looking: up
+    location: {x: 189.9, y: 49.5, z: 38.0}
+    units_per_pixel: {x: 0.02, y: 0.02}
+
+feeders:
+  F1:
+    type: static
+    name: Loose part on the bed
+    part: R0805-1K
+    pick_location: {x: 237.9, y: 119.5, z: 6.0, rotation: 0}
