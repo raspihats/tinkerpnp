@@ -222,6 +222,8 @@ known from the bring-up (`../openpnp-setup.md`, "How the XML field names were fo
 
 ## 5. API sketch
 
+Superseded by the full specification in [`api.md`](api.md); the table below is the original overview.
+
 Namespaces (JSON-RPC methods, mirrored over HTTP):
 
 | Namespace | Examples |

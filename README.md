@@ -3,7 +3,8 @@
 An open, API-first pick-and-place host. It runs on a Raspberry Pi (or a PC) next to the machine and is used from any
 browser. Started 2026-11-23.
 
-Status: **design phase.** No code yet. See [`docs/design.md`](docs/design.md).
+Status: **design phase.** No code yet. See [`docs/design.md`](docs/design.md), the API specification
+[`docs/api.md`](docs/api.md) and the configuration format [`docs/config.md`](docs/config.md).
 
 Aims:
 
