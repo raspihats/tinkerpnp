@@ -61,6 +61,7 @@ override.
 | `remove_comments` | Strip `; ...` and `( ... )` before sending | false | false |
 | `compress_gcode` | Remove spaces and trailing zeros (`G1X10.5F3000`) | false | false |
 | `disconnect_on_disable` | Close the port on `machine.disable` | false | false |
+| `settle` | `{COMMAND_NAME: ms}`: after these commands are confirmed, wait this long and drop stray replies (position reports and alarms in them still count) | `{}` | `HOME_COMMAND`, `HOME_AXIS_COMMAND`: 100 ms |
 
 ### Commands
 
@@ -96,6 +97,19 @@ Commands can have several lines (separated by `\n`); each line is sent and confi
 The `generic` profile only has `COMMAND_CONFIRM_REGEX` (`^ok.*`), `COMMAND_ERROR_REGEX` (`^(error|!!).*`),
 `MOVE_TO_COMMAND` (as above), `MOVE_TO_COMPLETE_COMMAND` (`M400`, wait for moves to finish on Marlin and
 Smoothieware) and `HOME_COMMAND` (`G28`). Set the rest in `commands`.
+
+### grblHAL as seen on the bench (MC5S3DP-XHAT, 2026-11-23)
+
+What the real board did, and how the profile deals with it:
+
+- `$H` (home all axes) answers `[MSG:]`, `ok`, and sometimes a **second `ok`** 11 ms later (twice in a row on the
+  first homings, not on a later one). An extra `ok` would confirm the next command early, so the profile drops it
+  (`settle`). The simulator reproduces it.
+- After Ctrl-X while homing is required, grblHAL says `[MSG:Homing cycle required]` (not `ALARM:11`).
+- grblHAL sends status reports by itself when its state changes (`<Home|...>`, `<Idle|...|H:1,7>`; `$10=17`,
+  status report mask). The driver takes positions from any report.
+- Z moves in 0.225 mm steps (4.444 steps/mm): a move to Z 57 ends at 56.931, inside Z's `tolerance` of 0.25.
+- Homing takes 11–23 s depending on where the axes start (`home_timeout` 30 s).
 
 ### Templates
 

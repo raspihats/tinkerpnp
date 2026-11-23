@@ -185,6 +185,7 @@ def test_stop_during_a_move_and_position_reports():
         with pytest.raises(Stopped):
             moving.result(5)
         assert any(1 < x < 300 for x in xs)                     # live positions from ? reports while moving
+        assert machine.get("actuator", "pump").status()["value"] is None   # the reset may have switched outputs
         f = fake(machine)
         time.sleep(0.1)
         assert f.state == "Alarm"                                 # feed hold + reset during motion: ALARM:3
@@ -261,3 +262,30 @@ def test_over_a_real_serial_port():
         stop.set()
         grbl.close()
         os.close(master)
+
+
+def test_second_ok_after_homing_is_dropped(m):
+    """grblHAL answers $H with two oks; with `settle` the second is dropped before the next command."""
+    drv = m.get("driver", "grbl")
+    drv.connect()
+    drv.command("HOME_COMMAND", timeout=5000)
+    time.sleep(0.05)
+    assert drv._rx.empty()                                   # nothing left to confirm the next command early
+    drv.opt["settle"] = {}                                    # without settle the stray ok is left waiting
+    drv.command("HOME_COMMAND", timeout=5000)
+    time.sleep(0.05)
+    assert drv._drain() == ["ok"]
+
+
+def test_actuator_without_a_command_refuses(m):
+    data = config_data()
+    data["actuators"]["pump"].pop("on")
+    machine = make(data=data)
+    try:
+        run(machine, machine.enable)
+        with pytest.raises(MachineError) as e:
+            run(machine, machine.actuate, "pump", True)
+        assert "no on command" in e.value.message
+        assert machine.get("actuator", "pump").status()["value"] is False      # still off, as it really is
+    finally:
+        machine.close()

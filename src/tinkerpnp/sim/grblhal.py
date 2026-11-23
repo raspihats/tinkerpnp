@@ -6,12 +6,13 @@ grbl-commands.md), not the whole of grblHAL:
 - Real-time bytes act at once, without `ok`: `?` (status report), `!` (feed hold), `~` (resume), Ctrl-X (soft reset).
 - Every line gets `ok` or `error:N`. An empty line gets `ok`, so Ctrl-X + newline gives exactly one `ok`.
 - With homing required (`$22`), it starts and resets into alarm and says `ALARM:11` (homing required); `$X` (unlock)
-  is then refused with `error:46`; `$H` (home all axes) or `$H<axis>` homes.
+  is then refused with `error:46`; `$H` (home all axes) or `$H<axis>` homes and, like the real board, answers
+  `[MSG:]`, `ok` and 11 ms later a second `ok`.
 - A soft reset during motion loses the position: `ALARM:3` (reset while in motion), homing required again.
 - `$SLP` (sleep): motors and outputs off, everything except a reset is refused.
 - `G0`/`G1` (move) answer `ok` at once and move in the background at the F feed rate (scaled by `time_scale`);
   `G4 P0` (dwell 0) answers when motion has finished, as on real grbl.
-- `M3`/`M5` (spindle on/off), `M64`/`M65 P<n>` (aux output on/off) set outputs.
+- `M3`/`M5` (spindle on/off), `M64`/`M65 P<n>` (aux output on/off) set outputs; a reset stops the spindle.
 
 Machine positions start at 0 and are reported as `MPos` with three decimals.
 """
@@ -120,6 +121,7 @@ class FakeGrblHAL:
                     break
             if moving:
                 self.homed = False
+            self.outputs.pop("spindle", None)       # a reset stops the spindle (aux outputs are left alone here)
             self.emit(GREETING)
             if moving:
                 self.state = "Alarm"
@@ -187,6 +189,9 @@ class FakeGrblHAL:
                     self.pos[a] = 0.0
                 self.homed = self.homed or axes == self.home_axes or set(self.home_axes) <= set(axes)
                 self.state = "Idle"
+            self.emit("[MSG:]")
+            self.emit("ok")
+            time.sleep(0.011)                        # the real board sends a second ok 11 ms later
             return "ok"
         if self.state == "Alarm":
             return "error:9"                         # G-code locked out during alarm

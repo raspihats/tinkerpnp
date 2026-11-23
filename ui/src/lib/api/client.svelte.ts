@@ -34,6 +34,10 @@ class TinkerClient {
 	lastError = $state<string | null>(null);
 	/** bumped on every notify_config_changed; pages that show configuration re-load when it changes */
 	configRevision = $state(0);
+	/** the last failed action (shown under the header until dismissed or replaced) */
+	notice = $state<{ text: string; name?: string; time: number } | null>(null);
+	/** actions in flight, by method, for busy indicators */
+	busy = $state<Record<string, number>>({});
 
 	#ws: WebSocket | null = null;
 	#nextId = 1;
@@ -152,6 +156,25 @@ class TinkerClient {
 				}
 			}
 		}
+	}
+
+	/** Call a method for a user action: failures become `notice` instead of exceptions. Returns null on failure. */
+	async act<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs = 120000): Promise<T | null> {
+		this.busy[method] = (this.busy[method] ?? 0) + 1;
+		try {
+			const r = await this.call<T>(method, params, timeoutMs);
+			return r;
+		} catch (e) {
+			if (e instanceof RpcError) this.notice = { text: e.message, name: e.data?.name, time: Date.now() };
+			else this.notice = { text: `${method}: ${e}`, time: Date.now() };
+			return null;
+		} finally {
+			this.busy[method] = Math.max(0, (this.busy[method] ?? 1) - 1);
+		}
+	}
+
+	isBusy(...methods: string[]): boolean {
+		return methods.some((m) => (this.busy[m] ?? 0) > 0);
 	}
 
 	call<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs = 30000): Promise<T> {

@@ -10,7 +10,7 @@ Sources for the OpenPnP side: OpenPnP 2.7 as set up on the first machine (`../op
 pnp-machine folder), its `machine.xml` (`tools/openpnp-config/`), and what was observed on that machine. Points that
 weren't checked against OpenPnP's source or a running OpenPnP are marked *not verified*.
 
-Status: as of phase 1, step 4 (motion core, `gcode` driver, console, cameras; 2026-11-23).
+Status: as of phase 1, step 5 (motion core, `gcode` driver, console, cameras, Machine page; 2026-11-23).
 
 ## Summary
 
@@ -39,6 +39,9 @@ Status: as of phase 1, step 4 (motion core, `gcode` driver, console, cameras; 20
 | Camera capture | Opened at startup, captured continuously | Opened on the first viewer, closed `idle_close` after the last | Spare the Pi's CPU and USB |
 | Viewing cameras | In the GUI | MJPEG streams any browser can show, overlays drawn on the server | API-first |
 | Simulated cameras | OpenPnP's simulated camera shows a picture of a board | `simulated` draws the bed grid and feeder parts (down) or the nozzles (up), following the machine | Testing jogs and offsets without hardware |
+| Actuator state after a stop or alarm | Kept as last set (*not verified*) | **Unknown** (shown amber) until set again: grbl's reset switches the spindle output off | The UI must not show a pump as on when it is off |
+| Stop key | – (*not verified*) | **Esc** on every page while enabled, plus a STOP button in the header | Safety |
+| Click to move | Camera view: click moves the camera there | Same, for head-mounted down-looking cameras with `units_per_pixel` | – |
 | Several clients | One GUI | Any number of API clients; requests run in order on one motion thread | API-first |
 | Errors | Java exceptions shown in dialogs | Named API errors (`not_homed`, `soft_limit`, `stopped`, ...) with data | Front ends switch on names |
 | Configuration file | `machine.xml` (Simple XML), edited through the GUI | `machine.yaml`, edited through the API (validated, comments kept) or by hand | See `docs/config.md` |
@@ -187,6 +190,8 @@ The `gcode` driver uses OpenPnP's GcodeDriver command names and template syntax,
   "Issues & Solutions" wizard that writes commands into the configuration instead.
 - **Additions:** `HOME_AXIS_COMMAND` (home some axes), `ALARM_REGEX` (an unasked alarm puts the machine in `alarm`
   and un-homes it), `CLEAR_ALARM_COMMAND`.
+- **`settle`** per command: wait and drop stray replies after a command (grblHAL sometimes answers `$H` with two
+  `ok`s). OpenPnP pairs replies the same way, one confirmation per command (*not verified how it deals with this*).
 - **Real-time commands** (`realtime`: `?`, `!`, `~` for grbl) are sent as bytes without line ending and without
   waiting for a confirmation; the `stop` sequence always is. grbl never answers `?` with `ok`.
 - **`backslash_escapes`** decodes commands only, never regexes: decoding would turn `\b` in `(?!11\b)` into a

@@ -53,7 +53,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "ACTUATOR_READ_REGEX": ("regex", "For actuators without read_regex: group Value"),
 }
 
-PROFILE_FIELDS = ("letter_variables", "backslash_escapes", "line_ending", "connect_wait", "timeout", "home_timeout",
+PROFILE_FIELDS = ("settle", "letter_variables", "backslash_escapes", "line_ending", "connect_wait", "timeout", "home_timeout",
                   "move_timeout", "motion_control", "realtime", "stop", "cancel", "after_stop", "position_poll",
                   "location_confirmation", "remove_comments", "compress_gcode", "disconnect_on_disable")
 
@@ -63,6 +63,7 @@ _GENERIC = {
     "realtime": [], "stop": [], "cancel": None, "after_stop": "idle", "position_poll": 0.0,
     "location_confirmation": False, "remove_comments": False, "compress_gcode": False,
     "disconnect_on_disable": False,
+    "settle": {},
     "commands": {
         "COMMAND_CONFIRM_REGEX": "^ok.*",
         "COMMAND_ERROR_REGEX": "^(error|!!).*",
@@ -83,6 +84,8 @@ PROFILES: dict[str, dict] = {
         "after_stop": "alarm",                  # a reset during motion loses the position (ALARM:3)
         "position_poll": 250.0,
         "connect_wait": 200.0,
+        # $H (home) answers with two "ok"s, 11 ms apart (seen on the MC5S3DP-XHAT, 2026-11-23): drop the second
+        "settle": {"HOME_COMMAND": 100.0, "HOME_AXIS_COMMAND": 100.0},
         "home_timeout": 30000.0,
         "commands": {
             "CONNECT_COMMAND": "$I",            # build info: allowed in alarm, proves the link
@@ -248,6 +251,16 @@ class GcodeDriverSettings(Settings):
     remove_comments: bool | None = None
     compress_gcode: bool | None = Field(None, description="Remove spaces and trailing zeros")
     disconnect_on_disable: bool | None = Field(None, description="Close the port on machine.disable")
+    settle: dict[str, DurationMs] | None = Field(None, description="After these commands are confirmed, wait this "
+                                                                    "long and drop stray replies (e.g. a second ok)")
+
+    @field_validator("settle")
+    @classmethod
+    def _check_settle(cls, v: dict | None) -> dict | None:
+        for name in v or {}:
+            if name not in COMMANDS or COMMANDS[name][0] != "command":
+                raise ValueError(f"settle: unknown command {name!r}")
+        return v
 
     @field_validator("commands")
     @classmethod
@@ -391,8 +404,8 @@ class GcodeDriver(DriverBase):
 
     def write_raw(self, text: str) -> None:
         """Real-time bytes: no line ending, no confirmation. Safe from any thread."""
-        self._write(text)
         self.machine.log_gcode(self.id, "tx", text)
+        self._write(text)
 
     def send(self, line: str, timeout: float | None = None, poll: bool = False) -> list[str]:
         """Send one line and wait for COMMAND_CONFIRM_REGEX. Returns the lines received meanwhile.
@@ -409,8 +422,8 @@ class GcodeDriver(DriverBase):
                 self._rx.get_nowait()
             except queue.Empty:
                 break
+        self.machine.log_gcode(self.id, "tx", line)     # before writing, so the log shows it before its reply
         self._write(line + self.opt["line_ending"])
-        self.machine.log_gcode(self.id, "tx", line)
         return self._wait_for(self.regex["COMMAND_CONFIRM_REGEX"], timeout, line, poll=poll)
 
     def _wait_for(self, pattern: re.Pattern, timeout: float | None, what: str,
@@ -459,7 +472,21 @@ class GcodeDriver(DriverBase):
         replies: list[str] = []
         for line in (ln for ln in text.split("\n") if ln):      # multi-line commands: one line at a time
             replies += self.send(line, timeout, poll=poll)
+        settle = self.opt["settle"].get(name)
+        if settle:
+            self._sleep(settle / 1000.0)
+            dropped = self._drain()
+            if dropped:
+                log.debug("%s: after %s dropped %r", self.name, name, dropped)
         return replies
+
+    def _drain(self) -> list[str]:
+        out = []
+        while True:
+            try:
+                out.append(self._rx.get_nowait())
+            except queue.Empty:
+                return out
 
     def read_position(self) -> dict[str, float] | None:
         """Ask for the position and wait for the report. Axis positions are updated by the report itself."""
@@ -562,7 +589,9 @@ class GcodeDriver(DriverBase):
             if s.on or s.off:
                 template = s.on if value else s.off
                 if template is None:
-                    return                           # only one direction configured: the other sends nothing
+                    raise MachineError("invalid_params", f"{actuator.name} has no {'on' if value else 'off'} "
+                                                         "command, so it can't be switched "
+                                                         f"{'on' if value else 'off'}")
             else:
                 template = None
         else:
@@ -610,7 +639,15 @@ class GcodeDriver(DriverBase):
         if self.opt["after_stop"] == "alarm":
             for a in self.axes():
                 a.update(homed=False)
+        self.forget_outputs()
         return self.opt["after_stop"]
+
+    def forget_outputs(self) -> None:
+        """After a stop or an alarm the controller may have switched outputs (grbl's reset turns the spindle off):
+        the driver's actuators are unknown until set again."""
+        for act in self.machine.of_kind("actuator"):
+            if getattr(act, "driver", None) is self:
+                act.update(value=None)
 
     def cancel(self) -> None:
         if self.transport is None:

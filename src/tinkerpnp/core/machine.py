@@ -109,7 +109,10 @@ class Machine:
             fn(driver_id, direction, line)
 
     def driver_alarm(self, driver: Any, alarm: str, line: str) -> None:
-        """A controller reported an alarm: its position can't be trusted any more."""
+        """A controller reported an alarm: its position (and its outputs) can't be trusted any more."""
+        forget = getattr(driver, "forget_outputs", None)
+        if forget is not None:
+            forget()
         for axis in self.of_kind("axis"):
             if isinstance(axis, ControllerAxis) and axis.driver is driver:
                 axis.update(homed=False)

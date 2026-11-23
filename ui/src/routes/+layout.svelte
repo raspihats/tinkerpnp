@@ -6,7 +6,8 @@
 	import type { LayoutProps } from './$types';
 	import { tinker } from '#lib/api/client.svelte.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
-	import { Cpu, Boxes, Camera, Settings2, SquareTerminal, Wifi, WifiOff, LoaderCircle } from '@lucide/svelte';
+	import { Cpu, Boxes, Camera, Settings2, SquareTerminal, Wifi, WifiOff, LoaderCircle, OctagonX, X } from '@lucide/svelte';
+	import { Button } from '#lib/components/ui/button/index.js';
 
 	let { children }: LayoutProps = $props();
 
@@ -21,7 +22,22 @@
 	];
 
 	const machineState = $derived((tinker.status['machine']?.state as string | undefined) ?? '–');
+	const enabled = $derived(tinker.status['machine']?.enabled === true);
+
+	function stop() {
+		tinker.act('machine.stop', { reason: 'stop button (TinkerUI)' });
+	}
+
+	// Esc stops the machine from any page
+	function onKey(e: KeyboardEvent) {
+		if (e.key === 'Escape' && enabled) {
+			e.preventDefault();
+			stop();
+		}
+	}
 </script>
+
+<svelte:window onkeydown={onKey} />
 
 <svelte:head>
 	<link rel="icon" href={favicon} />
@@ -47,7 +63,12 @@
 			{/each}
 		</nav>
 		<div class="ml-auto flex items-center gap-2">
-			<Badge variant="outline">machine: {machineState}</Badge>
+			{#if enabled}
+				<Button variant="destructive" size="sm" onclick={stop} title="Stop all motion now (Esc)">
+					<OctagonX class="size-4" /> STOP
+				</Button>
+			{/if}
+			<Badge variant={machineState === 'alarm' ? 'destructive' : 'outline'}>machine: {machineState}</Badge>
 			{#if tinker.connection === 'connected'}
 				<Badge variant="secondary"><Wifi class="size-3" /> connected</Badge>
 			{:else if tinker.connection === 'connecting'}
@@ -63,6 +84,14 @@
 			{#each tinker.info.warnings as w (w)}
 				<div>⚠ {w}</div>
 			{/each}
+		</div>
+	{/if}
+
+	{#if tinker.notice}
+		<div class="flex items-center gap-2 border-b bg-red-50 px-4 py-1.5 text-sm text-red-900 dark:bg-red-950 dark:text-red-100">
+			<span>{tinker.notice.text}</span>
+			{#if tinker.notice.name}<span class="font-mono text-xs opacity-70">{tinker.notice.name}</span>{/if}
+			<button class="ml-auto" title="Dismiss" onclick={() => (tinker.notice = null)}><X class="size-4" /></button>
 		</div>
 	{/if}
 

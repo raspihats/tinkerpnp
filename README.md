@@ -4,8 +4,8 @@ An open, API-first pick-and-place host. It runs on a Raspberry Pi (or a PC) next
 browser. Started 2026-11-23.
 
 Status: **phase 0 (skeleton)**: configuration, object model, simulated machine, the read side of the API,
-configuration editing (`config.update`, history, undo) and a first web UI work. Phase 1 (machine console) has
-started: enable/home/disable/stop, moves and jogs with safe Z and soft limits, actuators, and the `gcode` driver
+configuration editing (`config.update`, history, undo) and a first web UI work. Phase 1 (machine console) is
+nearly done: a Machine page to drive the machine from the browser, enable/home/disable/stop, moves and jogs with safe Z and soft limits, actuators, and the `gcode` driver
 (OpenPnP-style commands, grblHAL profile, built-in grblHAL simulator: `config/examples/simulated-grblhal.yaml`),
 a G-code console (API and web UI), and cameras (simulated and USB/V4L2, MJPEG streams with overlays:
 [`docs/cameras.md`](docs/cameras.md)).
@@ -53,11 +53,28 @@ npm run check    # type check
 npm run build    # static files in ui/build, served by `tinkerpnp`
 ```
 
-Pages so far: Machine (state, nozzles, axes, actuators, cameras, feeders, all live), Objects (every object's
-live status), Configuration (all object types with their schema fields; the machine configuration).
-- `config/examples/simulated.yaml`: the first machine without hardware.
+Pages:
+
+| Page | What it does |
+|---|---|
+| Machine | Enable / Disable, Home, Park, Safe Z, Clear alarm; a live camera view (click in a head camera's image to move it there); jogging of the selected tool (nozzles and head cameras, shared by all clients) with step, rotation step and speed; absolute moves; actuator switches (amber = unknown, e.g. after a stop); nozzle and axis tables |
+| Objects | Every object's live status |
+| Cameras | All camera streams with overlays (crosshair, scale, grid, info), snapshots, reopen, USB camera controls, and a scan of the video devices on the server |
+| Console | G-code console: live log of everything sent and received, command history, grblHAL shortcuts |
+| Configuration | Edit objects (validated, saved with comments kept), history with undo, object types and their fields |
+
+On every page, a **STOP** button in the header (and the **Esc** key) aborts motion while the machine is enabled.
+Keys on the Machine page (outside input fields): arrows jog X/Y, Page Up/Down jog Z, comma / period rotate,
+Shift = 10 × the step.
+
+Example configurations:
+
+- `config/examples/simulated.yaml`: the first machine without hardware (simulated driver).
+- `config/examples/simulated-grblhal.yaml`: the same machine on the `gcode` driver, talking to the built-in grblHAL
+  simulator: the same G-code as the real machine, without hardware.
 - `docs/examples/mc5s3dp-xhat.yaml`: the real machine; validates except for the servo feeders, whose plugin
   (`tinkerpnp-servo-hat`) doesn't exist yet.
 
-Layout: `src/tinkerpnp/core/` (units, type registry, config loader, object types, machine runtime),
-`src/tinkerpnp/api/` (JSON-RPC dispatcher, methods, FastAPI server), `tests/`.
+Layout: `src/tinkerpnp/core/` (units, type registry, config loader and editor, object types, motion planner, machine
+runtime, gcode driver, cameras), `src/tinkerpnp/sim/` (grblHAL simulator), `src/tinkerpnp/api/` (JSON-RPC
+dispatcher, methods, FastAPI server), `ui/` (TinkerUI), `tests/`.
