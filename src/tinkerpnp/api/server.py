@@ -4,12 +4,14 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import os
 import time
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from .. import __version__
 from ..core.machine import Machine
@@ -88,7 +90,10 @@ class Connection:
             await self.websocket.send_text(json.dumps(msg))
 
 
-def create_app(machine: Machine) -> FastAPI:
+DEFAULT_UI_DIR = Path(__file__).resolve().parents[3] / "ui" / "build"   # repo checkout: ui/build
+
+
+def create_app(machine: Machine, ui_dir: str | os.PathLike | None = None) -> FastAPI:
     app = FastAPI(title="TinkerPnP API", version=__version__,
                   description="HTTP mirror of the JSON-RPC API; see docs/api.md. Subscriptions need the WebSocket.",
                   docs_url="/api/docs", openapi_url="/api/openapi.json")
@@ -160,5 +165,18 @@ def create_app(machine: Machine) -> FastAPI:
             except json.JSONDecodeError:
                 params[k] = v
         return await http_call(method_path, request, params)
+
+    # The bundled web UI (TinkerUI, a static single-page app built in ui/). Any other front end can be served
+    # by any web server instead; it only needs the API above.
+    ui_root = Path(ui_dir) if ui_dir else DEFAULT_UI_DIR
+    if (ui_root / "index.html").is_file():
+        index = ui_root / "index.html"
+
+        @app.get("/{path:path}", include_in_schema=False)
+        async def ui(path: str) -> FileResponse:
+            target = (ui_root / path).resolve()
+            if path and target.is_file() and ui_root.resolve() in target.parents:
+                return FileResponse(target)
+            return FileResponse(index)          # SPA: client-side routes (/objects, /config) get index.html
 
     return app

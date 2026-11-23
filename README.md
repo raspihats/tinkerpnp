@@ -3,7 +3,8 @@
 An open, API-first pick-and-place host. It runs on a Raspberry Pi (or a PC) next to the machine and is used from any
 browser. Started 2026-11-23.
 
-Status: **phase 0 (skeleton)**: configuration, object model, simulated machine and the read side of the API work.
+Status: **phase 0 (skeleton)**: configuration, object model, simulated machine, the read side of the API and a
+first web UI work.
 See [`docs/design.md`](docs/design.md), the API specification
 [`docs/api.md`](docs/api.md) and the configuration format [`docs/config.md`](docs/config.md).
 
@@ -31,6 +32,23 @@ python3 -m venv .venv
 ```
 
 - `GET /api/server/info`, `GET /api/docs` (OpenAPI), WebSocket JSON-RPC on `/websocket`.
+- The server also serves the bundled web UI from `ui/build/` (or `--ui DIR`) at `/`.
+
+### Web UI (TinkerUI)
+
+Svelte 5 + SvelteKit 3 (static single-page app), TypeScript, Tailwind CSS 4, shadcn-svelte components (bits-ui),
+lucide icons. It's a client of the public API like any other front end.
+
+```sh
+cd ui
+npm install
+npm run dev      # http://localhost:5173, forwards /api, /websocket, /cameras to the server on :7300
+npm run check    # type check
+npm run build    # static files in ui/build, served by `tinkerpnp`
+```
+
+Pages so far: Machine (state, nozzles, axes, actuators, cameras, feeders, all live), Objects (every object's
+live status), Configuration (all object types with their schema fields; the machine configuration).
 - `config/examples/simulated.yaml`: the first machine without hardware.
 - `docs/examples/mc5s3dp-xhat.yaml`: the real machine; validates except for the servo feeders, whose plugin
   (`tinkerpnp-servo-hat`) doesn't exist yet.

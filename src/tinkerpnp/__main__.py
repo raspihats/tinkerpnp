@@ -15,6 +15,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1", help="listen address (0.0.0.0 for the network)")
     parser.add_argument("--port", type=int, default=7300)
     parser.add_argument("--check", action="store_true", help="validate the configuration and exit")
+    parser.add_argument("--ui", default=None, help="directory of the built web UI (default: ui/build in the repo)")
     parser.add_argument("--log-level", default="info")
     args = parser.parse_args(argv)
 
@@ -35,7 +36,7 @@ def main(argv: list[str] | None = None) -> int:
     from .api.server import create_app
     from .core.machine import Machine
 
-    app = create_app(Machine(cfg))
+    app = create_app(Machine(cfg), ui_dir=args.ui)
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
     return 0
 
