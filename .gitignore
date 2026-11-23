@@ -102,3 +102,13 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+# TinkerPnP additions
+.venv/
+node_modules/
+ui/dist/
+frontend/dist/
+*.sqlite3
+*.db
+.env
+.env.*

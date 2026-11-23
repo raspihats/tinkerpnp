@@ -1,0 +1,260 @@
+# TinkerPnP machine configuration: MC5S3DP-XHAT pick-and-place machine (draft, 2026-11-23)
+#
+# Format: see ../config.md. Values come from the machine's bring-up with OpenPnP (../../../openpnp-setup.md and
+# ../../../grblHAL-bringup.md). "MEASURED" = checked on the machine; "TODO" = placeholder still to be measured.
+#
+# Units: lengths in mm, angles in degrees, speeds in mm/s (deg/s), accelerations in mm/s^2, times in ms,
+# unless a value carries its own unit ("2 in", "500 mm/min").
+
+format: tinkerpnp-machine/1          # config format version
+name: MC5S3DP-XHAT bench machine
+
+include:
+  - feeders/*.yaml                   # optional: feeder banks in separate files (merged into `feeders`)
+
+# ── Machine behaviour ────────────────────────────────────────────────────────────────────────────────────────────
+machine:
+  on_enable: [home]                  # enable -> driver enable sequence -> home
+  on_home: [park]                    # after every homing: park (safe Z first, then X/Y)
+  park:
+    head: H1
+    location: {x: 1, y: 1}           # MACHINE coordinates (not "where the camera goes", unlike OpenPnP)
+  jog:
+    safe_z: always                   # every X/Y jog first raises all nozzles on the head to safe Z
+    distances: [0.01, 0.1, 1, 10, 100]
+  discard_location: {x: 10, y: 10, z: 30}   # TODO
+
+# ── Drivers ──────────────────────────────────────────────────────────────────────────────────────────────────────
+drivers:
+  grbl:
+    type: gcode
+    name: grblHAL (MC5S3DP-XHAT)
+    port: /dev/serial0               # Pi UART -> isolator -> STM32F411 USART1
+    baud: 115200
+    profile: grblhal                 # built-in command set; anything below overrides it
+    letter_variables: true           # templates use axis letters: {X:...} {A:...} {B:...}
+    timeout: 20000                   # homing takes ~11 s
+    max_feed: 8000 mm/min            # overall cap
+    commands:                        # same names and template syntax as OpenPnP's GcodeDriver
+      CONNECT_COMMAND: "$I"          # build info: proves the link; allowed in ALARM:11
+      ENABLE_COMMAND: "\u0018"       # Ctrl-X soft reset: wakes from sleep; reset + newline = exactly one "ok"
+      DISABLE_COMMAND: "$SLP"        # sleep: all drivers, pump and valves off
+      HOME_COMMAND: "$H"
+      MOVE_TO_COMMAND: "G1 {X:X%.4f} {Y:Y%.4f} {Z:Z%.4f} {A:A%.4f} {B:B%.4f} F{FeedRate:%.0f}"
+      MOVE_TO_COMPLETE_COMMAND: "G4 P0"
+      GET_POSITION_COMMAND: "?"
+      POSITION_REPORT_REGEX: '^<\w+.*MPos:(?<X>-?\d+\.\d+),(?<Y>-?\d+\.\d+),(?<Z>-?\d+\.\d+),(?<A>-?\d+\.\d+),(?<B>-?\d+\.\d+).*'
+      COMMAND_CONFIRM_REGEX: '^ok.*'
+      COMMAND_ERROR_REGEX: '^(error:.*|ALARM:(?!11\b).*)'   # ALARM:11 (homing required) is expected after a reset
+    stop: ["!", "\u0018"]            # feed hold, then soft reset
+    firmware_notes: >-
+      grblHAL $1=255 (drivers stay on once moving) and $37=0 (nothing held at power-up): Z fights a return spring.
+      Machine coordinates positive ($3=7, $23=7, $22=15). Valves are aux outputs P0/P1 (COOLANT_ENABLE=0 build).
+
+# ── Axes ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+axes:
+  x:
+    type: controller
+    driver: grbl
+    letter: X
+    kind: linear                     # linear | rotation
+    home: 0
+    soft_limits: [0, 500]            # grblHAL $130=510
+    feed: 8000 mm/min                # = grblHAL $110
+    acceleration: 200                # informational: set in firmware ($120), the driver doesn't send it
+    acceleration_applies_in: firmware
+    tolerance: 0.025
+  y:
+    type: controller
+    driver: grbl
+    letter: Y
+    kind: linear
+    home: 0
+    soft_limits: [0, 345]            # grblHAL $131=350
+    feed: 6000 mm/min                # = $111
+    acceleration: 100                # = $121
+    acceleration_applies_in: firmware
+    tolerance: 0.025
+  z:
+    type: controller
+    driver: grbl
+    letter: Z
+    kind: linear
+    home: 0
+    soft_limits: [0, 116]
+    safe_zone: [57, 57]              # MEASURED: both nozzles up at Z 57 (seesaw middle)
+    feed: 3000 mm/min                # kept slow: the motor loses steps against the spring when pushed
+    acceleration: 20000              # = $122
+    acceleration_applies_in: firmware
+    tolerance: 0.25                  # Z moves in 0.225 mm steps (4.444 steps/mm)
+  a:
+    type: controller
+    driver: grbl
+    letter: A
+    kind: rotation
+    home: 0
+    limit_rotation: [-180, 180]
+    feed: 3000 deg/min
+    acceleration: 100                # = $123
+    acceleration_applies_in: firmware
+  b:
+    type: controller
+    driver: grbl
+    letter: B
+    kind: rotation
+    home: 0
+    limit_rotation: [-180, 180]
+    feed: 3000 deg/min
+    acceleration: 100                # = $124
+    acceleration_applies_in: firmware
+  z_n2:                              # nozzle 2's view of the shared Z: lower value = lower nozzle, as for N1
+    type: mapped
+    input: z
+    map: [[0, 114], [114, 0]]        # raw Z 0 -> 114, raw 114 -> 0, i.e. z_n2 = 114 - Z; both read 57 at safe
+  z_top_camera:                      # cameras don't move in Z here; a virtual axis keeps the model uniform
+    type: virtual
+    kind: linear
+  rot_top_camera:
+    type: virtual
+    kind: rotation
+
+# ── Heads and what is mounted on them ────────────────────────────────────────────────────────────────────────────
+heads:
+  H1:
+    name: Main head
+    axes: {x: x, y: y}               # head-level X/Y; mounted objects add their offsets
+    pump: pump                       # actuator id; switched on while any nozzle carries a part
+    pump_settle: 0                   # ms to wait after switching the pump on
+
+    nozzles:
+      N1:
+        name: Nozzle 1
+        axes: {z: z, rotation: a}
+        offset: {x: 0, y: 0}         # reference nozzle
+        vacuum: valve1
+        tip: NT1
+        compatible_tips: [NT1]
+        pick_dwell: 0
+        place_dwell: 0
+        notes: "MEASURED pick height for parts lying on the bed: Z 6.0 (part at X 237.9, Y 119.5)"
+      N2:
+        name: Nozzle 2
+        axes: {z: z_n2, rotation: b}
+        offset: {x: 33.2, y: 0.0}    # MEASURED over the bottom camera (EvePnP's 43.9/0.2 was wrong)
+        vacuum: valve2
+        tip: NT2
+        compatible_tips: [NT2]
+
+    cameras:
+      top:
+        name: Top (down-looking)
+        type: simulated              # TODO: real down camera not fitted yet
+        looking: down
+        axes: {z: z_top_camera, rotation: rot_top_camera}
+        offset: {x: 21.9, y: 20.0}   # TODO: from EvePnP, not measured
+        units_per_pixel: {x: 0.04, y: 0.04}   # TODO
+
+    actuators: [pump, valve1, valve2]   # ids of actuators that belong to this head (defined below)
+
+# ── Nozzle tips ──────────────────────────────────────────────────────────────────────────────────────────────────
+nozzle_tips:
+  NT1:
+    name: Nozzle tip 1
+    max_part_diameter: 20
+    max_part_height: 5
+  NT2:
+    name: Nozzle tip 2
+    max_part_diameter: 20
+    max_part_height: 5
+
+# ── Actuators ────────────────────────────────────────────────────────────────────────────────────────────────────
+actuators:
+  pump:
+    type: gcode
+    driver: grbl
+    value: boolean
+    on: "M3 S1000"                   # spindle on, 100 % PWM -> vacuum pump
+    off: "M5"
+    on_enable: off
+    on_disable: off
+  valve1:
+    type: gcode
+    driver: grbl
+    value: boolean
+    on: "M64 P0"                     # aux output 0 on (PA11 / OD0 / X3 pin 9)
+    off: "M65 P0"
+    on_enable: off
+    on_disable: off
+  valve2:
+    type: gcode
+    driver: grbl
+    value: boolean
+    on: "M64 P1"                     # aux output 1 on (PA8 / OD1 / X3 pin 10)
+    off: "M65 P1"
+    on_enable: off
+    on_disable: off
+
+# ── Machine-mounted cameras ──────────────────────────────────────────────────────────────────────────────────────
+cameras:
+  bottom:
+    name: Bottom (Trust)
+    type: v4l2
+    looking: up
+    device:                          # matched in this order; the first that is present wins
+      usb_serial: "20131107"         # Trust Webcam, 0c45:6340
+      usb_id: "0c45:6340"
+      path: /dev/v4l/by-path/TODO-read-from-the-Pi   # fallback: stable path of the USB port (ls /dev/v4l/by-path)
+    format: {width: 640, height: 480, fps: 30, pixel_format: YUYV}
+    location: {x: 189.9, y: 49.5, z: 38.0}   # MEASURED: N1 tip centred and in focus
+    units_per_pixel: {x: 0.02, y: 0.02}       # TODO: measure with a part of known size
+    watchdog: {no_frame_timeout: 3000, reopen: true}
+  bottom_b:
+    name: Bottom B (Sonix 8 MP, test)
+    type: v4l2
+    looking: up
+    device:
+      usb_serial: "SN0001"           # Sonix "USB 2.0 Camera", 0c45:6366 (SN0001 is probably not unique per unit)
+      usb_id: "0c45:6366"
+    format: {width: 1280, height: 960, fps: 30, pixel_format: MJPG}   # MJPG keeps USB load low
+    controls: {focus_auto: false, focus_absolute: TODO}               # autofocus off: fixed scale for vision
+    location: {x: 189.9, y: 49.5, z: 38.0}   # TODO: same as bottom until mounted and measured
+    units_per_pixel: {x: 0.01, y: 0.01}       # TODO
+    watchdog: {no_frame_timeout: 3000, reopen: true}
+
+# ── Feeders ──────────────────────────────────────────────────────────────────────────────────────────────────────
+# Servo feeders on the I2C 8-channel servo HAT. The `servo` type comes from a plugin package that wraps the board's
+# Python library. Library name, I2C address and angle/pulse API: TODO (open question in the design).
+plugins:
+  - tinkerpnp-servo-hat              # pip package providing feeder type `servo` and actuator type `servo`
+
+feeders:
+  F1:
+    type: servo
+    name: Servo feeder 1
+    hat: {bus: 1, address: 0x40}     # TODO
+    channel: 0
+    angles: {rest: 30, feed: 120}    # TODO: per feeder
+    feed_time: 300                   # ms at the feed angle before returning
+    part: TODO                       # part id from the parts database
+    pick_location: {x: 0, y: 0, z: 6.0, rotation: 0}   # TODO; Z from the bed pick test, adjust for tape height
+    vision: null                     # later: pocket/hole detection with the top camera
+  F2:
+    type: servo
+    name: Servo feeder 2
+    hat: {bus: 1, address: 0x40}
+    channel: 1
+    angles: {rest: 30, feed: 120}
+    feed_time: 300
+    part: TODO
+    pick_location: {x: 0, y: 0, z: 6.0, rotation: 0}
+
+# ── Vision ───────────────────────────────────────────────────────────────────────────────────────────────────────
+vision:
+  bottom_vision:
+    camera: bottom
+    pipeline: default_bottom         # built-in pipeline; editable copy stored in the database
+    max_rotation_correction: 10      # deg
+    max_offset_correction: 1.0       # mm
+  fiducials:
+    camera: top
+    pipeline: default_fiducial
