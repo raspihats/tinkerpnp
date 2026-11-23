@@ -40,6 +40,15 @@ class TinkerClient {
 	#pending = new Map<number, Pending>();
 	#retry = 0;
 	#started = false;
+	#listeners = new Map<string, Set<(params: Record<string, unknown>) => void>>();
+
+	/** Listen to a server notification (e.g. notify_gcode). Returns a function that stops listening. */
+	on(method: string, fn: (params: Record<string, unknown>) => void): () => void {
+		let set = this.#listeners.get(method);
+		if (!set) this.#listeners.set(method, (set = new Set()));
+		set.add(fn);
+		return () => set.delete(fn);
+	}
 
 	start(): void {
 		if (this.#started) return;
@@ -102,7 +111,13 @@ class TinkerClient {
 		}
 	}
 
-	#handle(msg: { id?: number; result?: unknown; error?: { code: number; message: string; data?: object }; method?: string; params?: { status?: Status; revision?: number } }): void {
+	#handle(msg: {
+		id?: number;
+		result?: unknown;
+		error?: { code: number; message: string; data?: object };
+		method?: string;
+		params?: { status?: Status; revision?: number; [k: string]: unknown };
+	}): void {
 		if (msg.id !== undefined && msg.id !== null) {
 			const p = this.#pending.get(msg.id);
 			if (!p) return;
@@ -118,6 +133,9 @@ class TinkerClient {
 			// the machine was rebuilt from the new configuration: objects may have changed, subscribe again
 			this.configRevision = msg.params?.revision ?? this.configRevision + 1;
 			this.#afterConnect().catch((e) => (this.lastError = String(e)));
+		}
+		if (msg.method) {
+			for (const fn of this.#listeners.get(msg.method) ?? []) fn(msg.params ?? {});
 		}
 	}
 

@@ -1,0 +1,81 @@
+# The MC5S3DP-XHAT machine on the gcode driver, talking to the built-in grblHAL simulator instead of the board.
+# Same G-code as the real machine; no hardware. For trying the gcode driver, UI work and tests.
+# Run: tinkerpnp --config config/examples/simulated-grblhal.yaml
+
+format: tinkerpnp-machine/1
+name: MC5S3DP-XHAT (grblHAL simulator)
+
+machine:
+  on_enable: [home]
+  on_home: [park]
+  park:
+    head: H1
+    location: {x: 1, y: 1}
+  jog:
+    safe_z: always
+
+drivers:
+  grbl:
+    type: gcode
+    name: grblHAL simulator
+    port: sim://grblhal?time_scale=1&home_time=2   # real-time moves, homing takes 2 s
+    profile: grblhal                                # $I, Ctrl-X, $SLP, $H, G1 ... F, G4 P0, ? (see docs/drivers.md)
+
+axes:
+  x: {type: controller, driver: grbl, letter: X, soft_limits: [0, 500], feed: 8000 mm/min, acceleration: 200}
+  y: {type: controller, driver: grbl, letter: Y, soft_limits: [0, 345], feed: 6000 mm/min, acceleration: 100}
+  z:
+    type: controller
+    driver: grbl
+    letter: Z
+    home: 0                        # $H (home all axes) puts Z at 0; on_home: [park] lifts both nozzles to 57
+    soft_limits: [0, 116]
+    safe_zone: [57, 57]
+    feed: 3000 mm/min
+  a: {type: controller, driver: grbl, letter: A, kind: rotation, limit_rotation: [-180, 180], feed: 3000 deg/min}
+  b: {type: controller, driver: grbl, letter: B, kind: rotation, limit_rotation: [-180, 180], feed: 3000 deg/min}
+  z_n2: {type: mapped, input: z, map: [[0, 114], [114, 0]]}
+  z_top_camera: {type: virtual}
+  rot_top_camera: {type: virtual, kind: rotation}
+
+heads:
+  H1:
+    name: Main head
+    axes: {x: x, y: y}
+    pump: pump
+    nozzles:
+      N1: {name: Nozzle 1, axes: {z: z, rotation: a}, offset: {x: 0, y: 0}, vacuum: valve1, tip: NT1, compatible_tips: [NT1]}
+      N2: {name: Nozzle 2, axes: {z: z_n2, rotation: b}, offset: {x: 33.2, y: 0}, vacuum: valve2, tip: NT2, compatible_tips: [NT2]}
+    cameras:
+      top:
+        type: simulated
+        name: Top (down-looking)
+        looking: down
+        axes: {z: z_top_camera, rotation: rot_top_camera}
+        offset: {x: 21.9, y: 20.0}
+        units_per_pixel: {x: 0.04, y: 0.04}
+    actuators: [pump, valve1, valve2]
+
+nozzle_tips:
+  NT1: {name: Nozzle tip 1, max_part_diameter: 20, max_part_height: 5}
+  NT2: {name: Nozzle tip 2, max_part_diameter: 20, max_part_height: 5}
+
+actuators:
+  pump: {type: gcode, driver: grbl, name: Vacuum pump, on: M3 S1000, off: M5, on_enable: off, on_disable: off}
+  valve1: {type: gcode, driver: grbl, name: Valve 1 (N1 vacuum), on: M64 P0, off: M65 P0, on_enable: off, on_disable: off}
+  valve2: {type: gcode, driver: grbl, name: Valve 2 (N2 vacuum), on: M64 P1, off: M65 P1, on_enable: off, on_disable: off}
+
+cameras:
+  bottom:
+    type: simulated
+    name: Bottom (up-looking)
+    looking: up
+    location: {x: 189.9, y: 49.5, z: 38.0}
+    units_per_pixel: {x: 0.02, y: 0.02}
+
+feeders:
+  F1:
+    type: static
+    name: Loose part on the bed
+    part: R0805-1K
+    pick_location: {x: 237.9, y: 119.5, z: 6.0, rotation: 0}

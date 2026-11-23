@@ -6,7 +6,7 @@
 	import type { LayoutProps } from './$types';
 	import { tinker } from '#lib/api/client.svelte.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
-	import { Cpu, Boxes, Settings2, Wifi, WifiOff, LoaderCircle } from '@lucide/svelte';
+	import { Cpu, Boxes, Camera, Settings2, SquareTerminal, Wifi, WifiOff, LoaderCircle } from '@lucide/svelte';
 
 	let { children }: LayoutProps = $props();
 
@@ -15,6 +15,8 @@
 	const nav = [
 		{ href: '/', label: 'Machine', icon: Cpu },
 		{ href: '/objects', label: 'Objects', icon: Boxes },
+		{ href: '/cameras', label: 'Cameras', icon: Camera },
+		{ href: '/console', label: 'Console', icon: SquareTerminal },
 		{ href: '/config', label: 'Configuration', icon: Settings2 }
 	];
 

@@ -5,8 +5,11 @@ browser. Started 2026-11-23.
 
 Status: **phase 0 (skeleton)**: configuration, object model, simulated machine, the read side of the API,
 configuration editing (`config.update`, history, undo) and a first web UI work. Phase 1 (machine console) has
-started: enable/home/disable/stop, moves and jogs with safe Z and soft limits, and actuators work on the simulated
-machine; the G-code driver for grblHAL is next.
+started: enable/home/disable/stop, moves and jogs with safe Z and soft limits, actuators, and the `gcode` driver
+(OpenPnP-style commands, grblHAL profile, built-in grblHAL simulator: `config/examples/simulated-grblhal.yaml`),
+a G-code console (API and web UI), and cameras (simulated and USB/V4L2, MJPEG streams with overlays:
+[`docs/cameras.md`](docs/cameras.md)).
+Drivers: [`docs/drivers.md`](docs/drivers.md).
 See [`docs/design.md`](docs/design.md), the API specification
 [`docs/api.md`](docs/api.md), the configuration format [`docs/config.md`](docs/config.md), and where TinkerPnP
 behaves differently from OpenPnP: [`docs/openpnp-differences.md`](docs/openpnp-differences.md).

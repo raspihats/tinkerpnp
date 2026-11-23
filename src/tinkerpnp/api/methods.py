@@ -153,13 +153,7 @@ def machine_stop(ctx: "Connection", reason: str | None = None) -> dict:
 @rpc.method("machine.clear_alarm")
 async def machine_clear_alarm(ctx: "Connection") -> dict:
     """Leave the alarm state where the controller allows it."""
-    machine = ctx.app_state.machine
-
-    def clear() -> None:
-        st = machine.state.status()
-        if st["state"] == "alarm":
-            machine.state.update(state="idle" if st["enabled"] else "disabled", alarm=None, message=None)
-    await _run(ctx, clear)
+    await _run(ctx, ctx.app_state.machine.clear_alarm)
     return {}
 
 
@@ -256,6 +250,158 @@ async def actuator_read(ctx: "Connection", id: str) -> dict:
     if act is None:
         raise RpcError("not_found", f"no actuator {id!r}", what="actuator", id=id)
     return {"value": await _run(ctx, act.read)}
+
+
+# ── camera.* ───────────────────────────────────────────────────────────────────────────────────────────────────
+
+def _camera(ctx: "Connection", id: str):
+    cam = ctx.app_state.machine.objects.get(f"camera/{id}")
+    if cam is None:
+        raise RpcError("not_found", f"no camera {id!r}", what="camera", id=id)
+    return cam
+
+
+@rpc.method("camera.list", read_only=True)
+def camera_list(ctx: "Connection") -> list:
+    """Cameras with their stream and snapshot URLs."""
+    out = []
+    for cam in ctx.app_state.machine.of_kind("camera"):
+        st = cam.status()
+        out.append({"id": cam.id, "name": cam.settings.name or cam.id, "type": cam.type, "looking": st["looking"],
+                    "head": cam.head.id if cam.head is not None else None, "location": st["location"],
+                    "stream_url": st["stream_url"], "snapshot_url": st["snapshot_url"],
+                    "width": st.get("width"), "height": st.get("height"),
+                    "units_per_pixel": st.get("units_per_pixel")})
+    return out
+
+
+@rpc.method("camera.snapshot", read_only=True)
+async def camera_snapshot(ctx: "Connection", id: str, overlay: str | None = None) -> dict:
+    """Take a frame now; returns its URL (/cameras/<id>/frames/<n>.jpg, kept for the last 10 frames)."""
+    cam = _camera(ctx, id)
+    seq, frame = await asyncio.to_thread(cam.snapshot)
+    h, w = frame.shape[:2]
+    url = f"/cameras/{id}/frames/{seq}.jpg" + (f"?overlay={overlay}" if overlay else "")
+    return {"url": url, "frame": seq, "width": w, "height": h, "eventtime": ctx.app_state.eventtime()}
+
+
+@rpc.method("camera.devices", read_only=True)
+def camera_devices(ctx: "Connection") -> list:
+    """Video devices on the server, with USB serial, vendor:product, name and stable paths, to pick in setup."""
+    from ..core.cameras import list_devices
+    return list_devices()
+
+
+@rpc.method("camera.controls", read_only=True)
+async def camera_controls(ctx: "Connection", id: str) -> list:
+    """Device controls (exposure, focus, white balance, ...) with ranges and values. The camera must be open."""
+    cam = _camera(ctx, id)
+    if not hasattr(cam, "list_controls"):
+        raise RpcError("invalid_params", f"camera {id!r} ({cam.type}) has no device controls")
+    return await asyncio.to_thread(cam.list_controls)
+
+
+@rpc.method("camera.set_controls")
+async def camera_set_controls(ctx: "Connection", id: str, controls: dict) -> dict:
+    """Set device controls now (not saved; put them under the camera's `controls` in the config to keep them)."""
+    cam = _camera(ctx, id)
+    if not hasattr(cam, "apply_controls"):
+        raise RpcError("invalid_params", f"camera {id!r} ({cam.type}) has no device controls")
+    if not isinstance(controls, dict) or not controls:
+        raise RpcError("invalid_params", "controls must be a non-empty object {name: value}")
+    problems = await asyncio.to_thread(cam.apply_controls, controls)
+    return {"problems": problems}
+
+
+@rpc.method("camera.reopen")
+async def camera_reopen(ctx: "Connection", id: str) -> dict:
+    """Close and reopen the camera device."""
+    cam = _camera(ctx, id)
+    await asyncio.to_thread(cam.reopen)
+    return {}
+
+
+# ── gcode.* (console) ──────────────────────────────────────────────────────────────────────────────────────────
+
+def _gcode_driver(ctx: "Connection", driver: str | None):
+    machine = ctx.app_state.machine
+    drivers = [d for d in machine.of_kind("driver") if hasattr(d, "send")]
+    if driver is None:
+        if len(drivers) != 1:
+            raise RpcError("invalid_params", "give driver: " + (", ".join(d.id for d in drivers) or
+                                                               "this machine has no G-code driver"))
+        return drivers[0]
+    obj = machine.objects.get(f"driver/{driver}")
+    if obj is None:
+        raise RpcError("not_found", f"no driver {driver!r}", what="driver", id=driver)
+    if not hasattr(obj, "send"):
+        raise RpcError("invalid_params", f"driver {driver!r} ({obj.type}) doesn't take G-code")
+    return obj
+
+
+@rpc.method("gcode.send")
+async def gcode_send(ctx: "Connection", command: str, driver: str | None = None,
+                     timeout: float | None = None) -> dict:
+    """Send lines as typed (console). Bypasses the motion safety checks. Escapes like \\x18 (Ctrl-X) are decoded."""
+    from ..core.errors import MachineError
+    from ..core.gcode import _unescape
+    drv = _gcode_driver(ctx, driver)
+    if not isinstance(command, str) or not command.strip("\r\n"):
+        raise RpcError("invalid_params", "command must be a non-empty string")
+    if timeout is not None and not (isinstance(timeout, (int, float)) and 0 < timeout <= 600000):
+        raise RpcError("invalid_params", "timeout is in ms, 1..600000")
+    if ctx.app_state.machine.job.status().get("state") in ("running", "paused"):
+        raise RpcError("busy", "a job is running")
+    lines = [ln.rstrip("\r") for ln in _unescape(command).split("\n")]
+
+    def work() -> dict:
+        if drv.transport is None:
+            drv.connect()                 # the console works on a disabled machine too (e.g. to read $$)
+        responses: list[str] = []
+        ok = True
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                responses += drv.send(line, timeout)
+            except MachineError as exc:
+                if exc.name != "driver_error" or "response" not in exc.data:
+                    raise
+                responses.append(exc.data["response"])
+                ok = False
+                break
+        try:
+            drv.read_position()           # raw moves bypass TinkerPnP: re-read where the axes are
+        except MachineError:
+            pass
+        return {"responses": responses, "ok": ok}
+
+    return await _run(ctx, work)
+
+
+@rpc.method("gcode.subscribe", websocket_only=True)
+def gcode_subscribe(ctx: "Connection", driver: str | None = None) -> dict:
+    """notify_gcode for every line sent (tx) and received (rx), of one driver or all."""
+    if driver is not None:
+        _gcode_driver(ctx, driver)
+    ctx.gcode_drivers = {driver} if driver else set()
+    return {}
+
+
+@rpc.method("gcode.unsubscribe", websocket_only=True)
+def gcode_unsubscribe(ctx: "Connection") -> dict:
+    """Stop notify_gcode."""
+    ctx.gcode_drivers = None
+    return {}
+
+
+@rpc.method("gcode.history", read_only=True)
+def gcode_history(ctx: "Connection", driver: str | None = None, limit: int = 200) -> list:
+    """The last lines sent and received (up to 1000 are kept), oldest first."""
+    if not isinstance(limit, int) or not 1 <= limit <= 1000:
+        raise RpcError("invalid_params", "limit must be 1..1000")
+    entries = [e for e in ctx.app_state.gcode_log if driver is None or e["driver"] == driver]
+    return entries[-limit:]
 
 
 # ── config.* (read side) ───────────────────────────────────────────────────────────────────────────────────────────

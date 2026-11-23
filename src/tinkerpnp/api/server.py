@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import itertools
 import json
 import os
@@ -11,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
 from .. import __version__
 from ..core.config_edit import ConfigStore
@@ -28,6 +29,7 @@ class AppState:
     started: float = field(default_factory=time.monotonic)
     _ids: Any = field(default_factory=lambda: itertools.count(1))
     _machine_state: str | None = None
+    gcode_log: collections.deque = field(default_factory=lambda: collections.deque(maxlen=1000))
 
     def eventtime(self) -> float:
         return round(time.monotonic() - self.started, 3)
@@ -45,6 +47,14 @@ class AppState:
             self.notify_all("notify_machine_state", {"state": delta["state"], "previous": previous,
                                                      "message": self.machine.state.status().get("message")})
 
+    def on_gcode(self, driver: str, direction: str, line: str) -> None:
+        """Every G-code line a driver sends or receives: kept for gcode.history, sent to gcode subscribers."""
+        entry = {"driver": driver, "direction": direction, "line": line, "eventtime": self.eventtime()}
+        self.gcode_log.append(entry)
+        for conn in list(self.connections.values()):
+            if conn.gcode_drivers is not None and (not conn.gcode_drivers or driver in conn.gcode_drivers):
+                conn.send_threadsafe({"jsonrpc": "2.0", "method": "notify_gcode", "params": entry})
+
     def notify_all(self, method: str, params: dict) -> None:
         for conn in list(self.connections.values()):
             conn.send_threadsafe({"jsonrpc": "2.0", "method": method, "params": params})
@@ -53,10 +63,12 @@ class AppState:
         """Swap in a machine rebuilt from a changed configuration."""
         old = self.machine
         old.remove_listener(self.on_status)
+        old.remove_gcode_listener(self.on_gcode)
         old.close()
         self.machine = machine
         self._machine_state = machine.state.status()["state"]
         machine.add_listener(self.on_status)
+        machine.add_gcode_listener(self.on_gcode)
 
 
 class Connection:
@@ -68,6 +80,7 @@ class Connection:
         self.id = next(app_state._ids) if websocket is not None else 0
         self.remote = remote
         self.client: dict | None = None
+        self.gcode_drivers: set[str] | None = None    # None: not subscribed; empty: all drivers
         self._subscription: dict[str, list[str] | None] = {}
         self._pending: dict[str, dict] = {}
         self._interval = 0.1
@@ -135,6 +148,7 @@ def create_app(machine: Machine, ui_dir: str | os.PathLike | None = None) -> Fas
     state = AppState(machine=machine, store=store, _machine_state=machine.state.status()["state"])
     app.state.tinker = state
     machine.add_listener(state.on_status)
+    machine.add_gcode_listener(state.on_gcode)
 
     @app.websocket("/websocket")
     async def websocket_endpoint(ws: WebSocket) -> None:
@@ -215,6 +229,87 @@ def create_app(machine: Machine, ui_dir: str | os.PathLike | None = None) -> Fas
             except json.JSONDecodeError:
                 params[k] = v
         return await http_call(method_path, request, params)
+
+    # ── cameras (docs/api.md, section 9) ───────────────────────────────────────────────────────────────────────
+    def camera_or_404(camera_id: str):
+        cam = state.machine.objects.get(f"camera/{camera_id}")
+        if cam is None:
+            err = RpcError("not_found", f"no camera {camera_id!r}", what="camera", id=camera_id)
+            return None, JSONResponse({"error": err.as_error()}, status_code=404)
+        return cam, None
+
+    def parse_overlays(overlay: str | None) -> tuple[str, ...]:
+        from ..core.objects import OVERLAYS
+        return tuple(o for o in (overlay or "").split(",") if o in OVERLAYS)
+
+    NO_CACHE = {"Cache-Control": "no-store"}
+
+    @app.get("/cameras/{camera_id}/stream.mjpg", include_in_schema=False)
+    async def camera_stream(camera_id: str, request: Request, fps: float | None = None,
+                            overlay: str | None = None, frames: int | None = None):
+        cam, error = camera_or_404(camera_id)
+        if error:
+            return error
+        overlays = parse_overlays(overlay)
+        interval = 1.0 / min(max(fps or cam.settings.stream_fps, 0.2), 60.0)
+        boundary = "tinkerpnpframe"
+
+        async def generate():
+            current = cam
+            current.acquire()
+            seq, next_at, sent = 0, 0.0, 0
+            try:
+                while not await request.is_disconnected() and (frames is None or sent < frames):
+                    latest = state.machine.objects.get(f"camera/{camera_id}")
+                    if latest is not current:               # machine rebuilt from a new configuration
+                        current.release()
+                        if latest is None:
+                            return
+                        current, seq = latest, 0
+                        current.acquire()
+                    got = await asyncio.to_thread(current.wait_frame, seq, 1.0)
+                    if got is None:
+                        continue
+                    seq, frame = got
+                    data = await asyncio.to_thread(current.jpeg, seq, frame, overlays)
+                    yield (f"--{boundary}\r\nContent-Type: image/jpeg\r\nContent-Length: {len(data)}\r\n\r\n"
+                           .encode() + data + b"\r\n")
+                    sent += 1
+                    now = asyncio.get_running_loop().time()
+                    next_at = max(next_at + interval, now)
+                    await asyncio.sleep(next_at - now)
+            finally:
+                current.release()
+
+        return StreamingResponse(generate(), media_type=f"multipart/x-mixed-replace; boundary={boundary}",
+                                 headers=NO_CACHE)
+
+    @app.get("/cameras/{camera_id}/snapshot.jpg", include_in_schema=False)
+    async def camera_snapshot(camera_id: str, overlay: str | None = None):
+        cam, error = camera_or_404(camera_id)
+        if error:
+            return error
+        from ..core.errors import MachineError
+        try:
+            seq, frame = await asyncio.to_thread(cam.snapshot)
+        except MachineError as exc:
+            err = RpcError(exc.name, exc.message, **exc.data)
+            return JSONResponse({"error": err.as_error()}, status_code=err.http_status)
+        data = await asyncio.to_thread(cam.jpeg, seq, frame, parse_overlays(overlay))
+        return Response(data, media_type="image/jpeg", headers=NO_CACHE)
+
+    @app.get("/cameras/{camera_id}/frames/{seq}.jpg", include_in_schema=False)
+    async def camera_frame(camera_id: str, seq: int, overlay: str | None = None):
+        cam, error = camera_or_404(camera_id)
+        if error:
+            return error
+        frame = cam.frame(seq)
+        if frame is None:
+            err = RpcError("not_found", f"frame {seq} is gone (only the last {cam.KEEP_FRAMES} are kept)",
+                           what="frame", id=seq)
+            return JSONResponse({"error": err.as_error()}, status_code=404)
+        data = await asyncio.to_thread(cam.jpeg, seq, frame, parse_overlays(overlay))
+        return Response(data, media_type="image/jpeg", headers={"Cache-Control": "max-age=60"})
 
     # The bundled web UI (TinkerUI, a static single-page app built in ui/). Any other front end can be served
     # by any web server instead; it only needs the API above.

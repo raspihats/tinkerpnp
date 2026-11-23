@@ -13,7 +13,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from ruamel.yaml import YAML
 
-from . import objects  # noqa: F401  (registers the built-in types)
+from . import cameras, gcode, objects  # noqa: F401  (registers the built-in types)
 from .objects import Location, Settings
 from .registry import Registry, registry as default_registry
 

@@ -1,7 +1,7 @@
 """Built-in object types: settings models (validation + JSON Schema) and runtime classes (status for the API).
 
-The simulated driver and camera work without hardware. The `gcode` driver and `v4l2` camera are registered with their
-full settings (so real machine configs validate) but are not implemented yet (phase 1).
+The simulated driver works without hardware. The `gcode` driver and actuator live in gcode.py, the camera types in
+cameras.py.
 """
 from __future__ import annotations
 
@@ -145,27 +145,7 @@ class SimulatedDriver(DriverBase):
         pass
 
 
-class GcodeDriverSettings(Settings):
-    port: str = Field(..., description="Serial device, e.g. /dev/serial0, or tcp://host:port")
-    baud: int = 115200
-    profile: str | None = Field(None, description="Built-in firmware profile: grblhal, marlin, smoothieware, duet, tinyg")
-    letter_variables: bool = True
-    timeout: DurationMs = 5000.0
-    max_feed: Speed | None = None
-    commands: dict[str, str] = Field(default_factory=dict, description="OpenPnP-style commands, overriding the profile")
-    stop: list[str] = Field(default_factory=list, description="Sent in order on machine.stop")
-
-
-@registry.register("driver", "gcode", GcodeDriverSettings, "G-code controller",
-                   "G-code controller (grblHAL, Marlin, Smoothieware, Duet, TinyG) with OpenPnP-compatible commands")
-class GcodeDriver(DriverBase):
-    NOT_YET = "the gcode driver is not implemented yet (phase 1)"
-
-    def setup(self) -> None:
-        self._status.update(connected=False, firmware=None, port=self.settings.port, last_error=self.NOT_YET)
-
-    def connect(self) -> None:
-        raise MachineError("driver_error", self.NOT_YET, driver=self.id)
+# The gcode driver and actuator are in gcode.py.
 
 
 # ── Axes ───────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -385,18 +365,6 @@ class SimulatedActuatorSettings(Settings):
     on_disable: Any = None
 
 
-class GcodeActuatorSettings(Settings):
-    driver: str
-    value: ValueType = "boolean"
-    on: str | None = Field(None, description="G-code for true/on")
-    off: str | None = Field(None, description="G-code for false/off")
-    set: str | None = Field(None, description="Template for double/string values, e.g. 'M3 S{value}'")
-    read: str | None = None
-    read_regex: str | None = None
-    on_enable: Any = None
-    on_disable: Any = None
-
-
 _TRUE = {"on", "true", "yes", "1"}
 _FALSE = {"off", "false", "no", "0"}
 
@@ -443,15 +411,9 @@ class SimulatedActuator(ActuatorBase):
     pass
 
 
-@registry.register("actuator", "gcode", GcodeActuatorSettings, "G-code actuator")
-class GcodeActuator(ActuatorBase):
-    """Switched with G-code through a driver (e.g. M64 P0 / M65 P0)."""
-
-    def write(self, value: Any) -> None:
-        self.machine.get("driver", self.settings.driver).actuate(self, value)
-
-
 # ── Cameras ────────────────────────────────────────────────────────────────────────────────────────────────────────
+# Settings shared by every camera type, and the capture machinery (frames, viewers, JPEG, overlays). The camera
+# types (simulated, v4l2) are in cameras.py.
 
 class CameraAxes(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -459,57 +421,63 @@ class CameraAxes(BaseModel):
     rotation: str
 
 
+class Crop(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    x: int = Field(0, ge=0)
+    y: int = Field(0, ge=0)
+    width: int = Field(..., gt=0)
+    height: int = Field(..., gt=0)
+
+
+class ImageTransform(BaseModel):
+    """Applied to every frame, in this order: crop, rotate, flip."""
+    model_config = ConfigDict(extra="forbid")
+    crop: Crop | None = Field(None, description="Pixels of the sensor image to keep")
+    rotate: Literal[0, 90, 180, 270] = Field(0, description="Clockwise, degrees")
+    flip_x: bool = Field(False, description="Mirror left-right")
+    flip_y: bool = Field(False, description="Mirror top-bottom")
+
+
 class CameraCommon(Settings):
     looking: Literal["up", "down"]
     location: Location | None = Field(None, description="Machine-mounted cameras: fixed location")
     offset: Location | None = Field(None, description="Head-mounted cameras: offset from the head")
     axes: CameraAxes | None = None
-    units_per_pixel: Scale | None = None
+    units_per_pixel: Scale | None = Field(None, description="mm per pixel in X and Y (after the transform)")
+    transform: ImageTransform = Field(default_factory=ImageTransform)
+    idle_close: DurationMs = Field(10000.0, description="Close the device this long after the last viewer left; "
+                                                        "0 = keep it open once opened")
+    jpeg_quality: int = Field(80, ge=10, le=100, description="For streams and snapshots")
+    stream_fps: float = Field(15.0, gt=0, le=120, description="Default frame rate of MJPEG streams")
 
 
-class SimulatedCameraSettings(CameraCommon):
-    width: int = 640
-    height: int = 480
-
-
-class DeviceSelector(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    usb_serial: str | None = None
-    usb_id: str | None = Field(None, description="vendor:product, e.g. 0c45:6340")
-    path: str | None = None
-
-
-class VideoFormat(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    width: int
-    height: int
-    fps: float = 30
-    pixel_format: str = "MJPG"
-
-
-class Watchdog(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    no_frame_timeout: DurationMs = 3000.0
-    reopen: bool = True
-
-
-class V4l2CameraSettings(CameraCommon):
-    device: DeviceSelector
-    format: VideoFormat
-    controls: dict[str, Any] = Field(default_factory=dict)
-    watchdog: Watchdog = Field(default_factory=Watchdog)
+OVERLAYS = ("crosshair", "scale", "grid", "info")
 
 
 class CameraBase(MachineObject):
+    """Frames come from `open_device` / `grab` / `close_device` (camera types implement them) on a capture thread,
+    which runs while anyone is watching (`acquire` / `release`) and stops `idle_close` ms after the last viewer."""
     kind = "camera"
     head: Head | None = None
+    KEEP_FRAMES = 10
 
     def setup(self) -> None:
         s = self.settings
         self._status.update(looking=s.looking, location=self.compute_location(), streaming=False,
                             units_per_pixel=s.units_per_pixel.model_dump() if s.units_per_pixel else None,
                             stream_url=f"/cameras/{self.id}/stream.mjpg",
-                            snapshot_url=f"/cameras/{self.id}/snapshot.jpg", last_error=None)
+                            snapshot_url=f"/cameras/{self.id}/snapshot.jpg", last_error=None, viewers=0,
+                            fps=None, width=None, height=None)
+        import threading
+        self._cond = threading.Condition()
+        self._frames: dict[int, Any] = {}          # seq -> frame (numpy array), the last KEEP_FRAMES
+        self._seq = 0
+        self._jpeg: dict[tuple, bytes] = {}         # (seq, overlays) -> JPEG
+        self._users = 0
+        self._last_use = time.monotonic()
+        self._thread: threading.Thread | None = None
+        self._running = False
+        self._stop = threading.Event()
 
     def compute_location(self) -> dict | None:
         s = self.settings
@@ -522,23 +490,219 @@ class CameraBase(MachineObject):
         if self.head is not None:
             self.update(location=self.compute_location())
 
+    # ── implemented by camera types ────────────────────────────────────────────────────────────────────────────
+    def open_device(self) -> None: ...
 
-@registry.register("camera", "simulated", SimulatedCameraSettings, "Simulated camera")
-class SimulatedCamera(CameraBase):
-    def setup(self) -> None:
-        super().setup()
-        self._status.update(streaming=True, width=self.settings.width, height=self.settings.height, fps=10)
+    def grab(self) -> Any:
+        """Block until the next frame (BGR numpy array); None if none came (the watchdog decides what then)."""
+        return None
+
+    def close_device(self) -> None: ...
+
+    # ── viewers ────────────────────────────────────────────────────────────────────────────────────────────────
+    def acquire(self) -> None:
+        import threading
+        with self._cond:
+            self._users += 1
+            self._last_use = time.monotonic()
+            self.update(viewers=self._users)
+            if not self._running:
+                self._running = True
+                self._stop.clear()
+                self._thread = threading.Thread(target=self._capture_loop, name=f"camera-{self.id}", daemon=True)
+                self._thread.start()
+
+    def release(self) -> None:
+        with self._cond:
+            self._users = max(0, self._users - 1)
+            self._last_use = time.monotonic()
+            self.update(viewers=self._users)
+
+    def close(self) -> None:
+        self._stop.set()
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=3)
+
+    def reopen(self) -> None:
+        """Close and reopen the device (after unplugging, or to apply a new format)."""
+        was_running = self._running
+        self.close()
+        if was_running:
+            self.acquire()
+            self.release()
+
+    # ── capture ────────────────────────────────────────────────────────────────────────────────────────────────
+    def _capture_loop(self) -> None:
+        import logging
+        log = logging.getLogger("tinkerpnp.camera")
+        self.update(last_error=None)
+        try:
+            self.open_device()               # may set last_error itself (e.g. controls it couldn't set)
+        except Exception as exc:
+            log.error("%s: %s", self.name, exc)
+            self.update(last_error=str(exc), streaming=False)
+            with self._cond:
+                self._running = False
+                self._cond.notify_all()
+            try:
+                self.close_device()
+            except Exception:
+                pass
+            return
+        frames, t_fps = 0, time.monotonic()
+        try:
+            while not self._stop.is_set():
+                with self._cond:   # decide and mark stopped under the lock, so acquire() starts a new thread
+                    if (self.settings.idle_close > 0 and self._users == 0
+                            and time.monotonic() - self._last_use > self.settings.idle_close / 1000):
+                        self._running = False
+                        break
+                try:
+                    frame = self.grab()
+                except Exception as exc:
+                    log.error("%s: %s", self.name, exc)
+                    self.update(last_error=str(exc))
+                    frame = None
+                if frame is None:
+                    if self._stop.wait(0.05):
+                        break
+                    continue
+                frame = self.apply_transform(frame)
+                with self._cond:
+                    self._seq += 1
+                    self._frames[self._seq] = frame
+                    self._frames.pop(self._seq - self.KEEP_FRAMES, None)
+                    for key in [k for k in self._jpeg if k[0] <= self._seq - self.KEEP_FRAMES]:
+                        del self._jpeg[key]
+                    self._cond.notify_all()
+                frames += 1
+                now = time.monotonic()
+                if now - t_fps >= 1.0:
+                    h, w = frame.shape[:2]
+                    self.update(streaming=True, fps=round(frames / (now - t_fps), 1), width=w, height=h)
+                    frames, t_fps = 0, now
+                elif not self._status.get("streaming"):
+                    h, w = frame.shape[:2]
+                    self.update(streaming=True, width=w, height=h)
+        finally:
+            try:
+                self.close_device()
+            except Exception:
+                log.exception("%s: close", self.name)
+            import threading
+            with self._cond:
+                if self._thread is threading.current_thread():
+                    self._running = False
+                self._cond.notify_all()
+            self.update(streaming=False, fps=None)
+
+    def apply_transform(self, frame: Any) -> Any:
+        import cv2
+        t = self.settings.transform
+        if t.crop is not None:
+            c = t.crop
+            frame = frame[c.y:c.y + c.height, c.x:c.x + c.width]
+        if t.rotate:
+            frame = cv2.rotate(frame, {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180,
+                                       270: cv2.ROTATE_90_COUNTERCLOCKWISE}[t.rotate])
+        if t.flip_x and t.flip_y:
+            frame = cv2.flip(frame, -1)
+        elif t.flip_x:
+            frame = cv2.flip(frame, 1)
+        elif t.flip_y:
+            frame = cv2.flip(frame, 0)
+        return frame
+
+    def wait_frame(self, after: int, timeout: float) -> tuple[int, Any] | None:
+        """The newest frame with seq > after, waiting up to timeout seconds. None if none came."""
+        deadline = time.monotonic() + timeout
+        with self._cond:
+            while self._seq <= after or self._seq not in self._frames:
+                left = deadline - time.monotonic()
+                if left <= 0 or (not self._running and self._status.get("last_error")):
+                    return None
+                self._cond.wait(min(left, 0.25))
+            return self._seq, self._frames[self._seq]
+
+    def frame(self, seq: int) -> Any:
+        with self._cond:
+            return self._frames.get(seq)
+
+    def snapshot(self, timeout: float = 5.0) -> tuple[int, Any]:
+        """A frame taken after this call started (opens the device if needed)."""
+        from .errors import MachineError
+        self.acquire()
+        try:
+            got = self.wait_frame(self._seq, timeout)
+        finally:
+            self.release()
+        if got is None:
+            raise MachineError("driver_error", f"{self.name}: no frame ({self._status.get('last_error') or 'timeout'})",
+                               camera=self.id)
+        return got
+
+    # ── encoding and overlays ──────────────────────────────────────────────────────────────────────────────────
+    def jpeg(self, seq: int, frame: Any, overlays: tuple[str, ...] = ()) -> bytes:
+        import cv2
+        key = (seq, overlays)
+        cached = self._jpeg.get(key)
+        if cached is not None:
+            return cached
+        if overlays:
+            frame = self.draw_overlays(frame.copy(), overlays)
+        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.settings.jpeg_quality])
+        data = buf.tobytes()
+        with self._cond:
+            if seq > self._seq - self.KEEP_FRAMES:
+                self._jpeg[key] = data
+        return data
+
+    def draw_overlays(self, img: Any, overlays: tuple[str, ...]) -> Any:
+        import cv2
+        h, w = img.shape[:2]
+        cx, cy = w // 2, h // 2
+        color = (0, 220, 255)
+        upp = self.settings.units_per_pixel
+        if "grid" in overlays and upp:
+            step = _nice_step(upp.x * w / 8)
+            for i in range(-50, 51):
+                x = int(cx + i * step / upp.x)
+                y = int(cy + i * step / upp.y)
+                if 0 <= x < w:
+                    cv2.line(img, (x, 0), (x, h), (90, 90, 90), 1)
+                if 0 <= y < h:
+                    cv2.line(img, (0, y), (w, y), (90, 90, 90), 1)
+        if "crosshair" in overlays:
+            cv2.line(img, (0, cy), (w, cy), color, 1)
+            cv2.line(img, (cx, 0), (cx, h), color, 1)
+            cv2.circle(img, (cx, cy), max(6, min(w, h) // 12), color, 1)
+        if "scale" in overlays and upp:
+            length_mm = _nice_step(upp.x * w / 5)
+            px = int(length_mm / upp.x)
+            x0, y0 = 12, h - 16
+            cv2.line(img, (x0, y0), (x0 + px, y0), (255, 255, 255), 3)
+            cv2.line(img, (x0, y0), (x0 + px, y0), (0, 0, 0), 1)
+            cv2.putText(img, f"{length_mm:g} mm", (x0, y0 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1,
+                        cv2.LINE_AA)
+        if "info" in overlays:
+            loc = self.compute_location() or {}
+            text = f"{self.id}  X{loc.get('x', 0):.2f} Y{loc.get('y', 0):.2f}  {w}x{h}"
+            cv2.putText(img, text, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
+            cv2.putText(img, text, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        return img
 
 
-@registry.register("camera", "v4l2", V4l2CameraSettings, "USB / V4L2 camera")
-class V4l2Camera(CameraBase):
-    """USB camera through Video4Linux (OpenCV). Matched by USB serial, vendor:product or path."""
-
-    def setup(self) -> None:
-        super().setup()
-        f = self.settings.format
-        self._status.update(width=f.width, height=f.height, fps=f.fps,
-                            last_error="v4l2 camera not implemented yet (phase 1)")
+def _nice_step(value: float) -> float:
+    """1, 2 or 5 x 10^n just below value."""
+    import math
+    if value <= 0:
+        return 1.0
+    exp = math.floor(math.log10(value))
+    for m in (5, 2, 1):
+        if m * 10 ** exp <= value:
+            return m * 10 ** exp
+    return 10 ** exp
 
 
 # ── Feeders ────────────────────────────────────────────────────────────────────────────────────────────────────────

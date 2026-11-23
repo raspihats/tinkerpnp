@@ -94,9 +94,8 @@ def test_soft_limits_refuse_the_whole_move(m):
     with pytest.raises(MachineError) as e:
         run(m, m.planner.move_to, nozzle(m, "N2"), {"z": -5})           # raw Z 119 > 116
     assert e.value.data["axis"] == "z"
-    with pytest.raises(MachineError) as e:
-        run(m, m.planner.move_to, nozzle(m, "N1"), {"rotation": 200})
-    assert e.value.data["axis"] == "a"
+    run(m, m.planner.move_to, nozzle(m, "N1"), {"rotation": 200})   # limit_rotation [-180, 180]: by whole turns
+    assert pos(m, "a") == -160
 
 
 def test_jog_and_head_camera(m):

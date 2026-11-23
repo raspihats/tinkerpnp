@@ -14,6 +14,8 @@ dependencies = [
     "uvicorn[standard]>=0.29",   # [standard] brings the WebSocket library uvicorn needs
     "pydantic>=2.6",
     "ruamel.yaml>=0.18",
+    "pyserial>=3.5",             # gcode driver: serial ports
+    "opencv-python-headless>=4.8",   # cameras (and vision later); brings numpy
 ]
 
 [project.optional-dependencies]

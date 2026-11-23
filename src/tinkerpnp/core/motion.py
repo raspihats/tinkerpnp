@@ -30,6 +30,21 @@ def raw(axis: AxisBase, value: float) -> tuple[AxisBase, float]:
     return axis, value
 
 
+def normalize_rotation(axis: AxisBase, value: float) -> float:
+    """Rotation axes with limit_rotation (e.g. [-180, 180]) take angles into that range by whole turns, as OpenPnP's
+    "limit rotation" does: 200 -> -160. A range narrower than one turn is a hard limit (checked later)."""
+    if not isinstance(axis, ControllerAxis) or axis.axis_kind != "rotation" or not axis.settings.limit_rotation:
+        return value
+    low, high = axis.settings.limit_rotation
+    if high - low < 360 - 1e-9:
+        return value
+    while value > high + 1e-9:
+        value -= 360.0
+    while value < low - 1e-9:
+        value += 360.0
+    return value
+
+
 class Motion:
     def __init__(self, machine: "Machine"):
         self.m = machine
@@ -85,6 +100,7 @@ class Motion:
             if coord in ("x", "y") and offset is not None:
                 value -= getattr(offset, coord) or 0.0
             axis, value = raw(axes[coord], value)
+            value = normalize_rotation(axis, value)
             if axis in out and abs(out[axis] - value) > axis.tolerance:
                 raise MachineError("invalid_params", f"{obj.name}: z and another coordinate drive axis/{axis.id}"
                                                      " to different positions")

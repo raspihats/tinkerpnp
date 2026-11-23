@@ -46,6 +46,7 @@ class Machine:
         self.registry = reg or default_registry
         self.objects: dict[str, MachineObject] = {}
         self._listeners: list[Listener] = []
+        self._gcode_listeners: list[Callable[[str, str, str], None]] = []
         self._building = True
 
         first_nozzle = next((o.id for o in config.objects if o.kind == "nozzle"), None)
@@ -77,9 +78,45 @@ class Machine:
         self._lock = threading.Lock()
 
     def close(self) -> None:
-        """Stop motion and the worker thread (the machine is being replaced or the server stops)."""
+        """Stop motion, close driver links and the worker thread (machine replaced or server stopping)."""
         self.stop("shutting down")
         self.worker.shutdown(wait=False, cancel_futures=True)
+        for camera in self.of_kind("camera"):
+            try:
+                camera.close()
+            except Exception:
+                log.exception("closing %s", camera.name)
+        for driver in self.drivers():
+            disconnect = getattr(driver, "disconnect", None)
+            if disconnect is not None:
+                try:
+                    disconnect()
+                except Exception:
+                    log.exception("closing %s", driver.name)
+
+    # ── driver callbacks (any thread) ──────────────────────────────────────────────────────────────────────────
+    def add_gcode_listener(self, fn: Callable[[str, str, str], None]) -> None:
+        self._gcode_listeners.append(fn)
+
+    def remove_gcode_listener(self, fn: Callable[[str, str, str], None]) -> None:
+        if fn in self._gcode_listeners:
+            self._gcode_listeners.remove(fn)
+
+    def log_gcode(self, driver_id: str, direction: str, line: str) -> None:
+        """Every line a driver sends ("tx") or receives ("rx"), for console views."""
+        log.debug("%s %s %r", driver_id, direction, line)
+        for fn in list(self._gcode_listeners):
+            fn(driver_id, direction, line)
+
+    def driver_alarm(self, driver: Any, alarm: str, line: str) -> None:
+        """A controller reported an alarm: its position can't be trusted any more."""
+        for axis in self.of_kind("axis"):
+            if isinstance(axis, ControllerAxis) and axis.driver is driver:
+                axis.update(homed=False)
+        self._refresh_dependents()
+        self._update_homed()
+        if self.state.status()["enabled"]:
+            self._set_state("alarm", message=f"{driver.id}: {line}", alarm=alarm)
 
     # ── running requests on the motion thread ──────────────────────────────────────────────────────────────────
     def submit(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> concurrent.futures.Future:
@@ -112,6 +149,7 @@ class Machine:
                 log.exception("stop failed on %s", driver.name)
                 states.append("alarm")
                 driver.update(last_error=str(exc))
+        self._update_homed()
         st = self.state.status()
         if st["enabled"]:
             if "alarm" in states:
@@ -146,10 +184,11 @@ class Machine:
                 driver.enable()
             self.state.update(enabled=True, alarm=None)
             self._set_state("idle")
+            self.run_sequence(self.config.machine.on_enable, "machine.on_enable")
+            # after the sequence: controllers like grbl refuse G-code (M5, M65, ...) until they're homed
             for act in self.of_kind("actuator"):
                 if act.settings.on_enable is not None:
                     act.set(act.settings.on_enable)
-            self.run_sequence(self.config.machine.on_enable, "machine.on_enable")
         except Exception as exc:
             message = exc.message if isinstance(exc, MachineError) else str(exc)
             try:
@@ -191,7 +230,7 @@ class Machine:
             if missing:
                 raise MachineError("not_found", f"no controller axis {', '.join(missing)}", what="axis", id=missing[0])
             controller = [known[a] for a in axes]
-        self._set_state("homing")
+        self._set_state("homing", alarm=None)
         try:
             by_driver: dict[DriverBase, list[ControllerAxis]] = {}
             for a in controller:
@@ -209,6 +248,15 @@ class Machine:
                 self._set_state("idle")
         if self.state.status()["homed"]:
             self.run_sequence(self.config.machine.on_home, "machine.on_home")
+
+    def clear_alarm(self) -> None:
+        for driver in self.drivers():
+            clear = getattr(driver, "clear_alarm", None)
+            if clear is not None and driver.status().get("connected"):
+                clear()
+        st = self.state.status()
+        if st["state"] == "alarm":
+            self._set_state("idle" if st["enabled"] else "disabled", alarm=None)
 
     def actuate(self, actuator_id: str, value: Any) -> Any:
         act = self.objects.get(f"actuator/{actuator_id}")

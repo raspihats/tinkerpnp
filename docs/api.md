@@ -212,22 +212,29 @@ How motion works (implemented in phase 1, step 1):
 - Locations are of the object itself: for `nozzle/N2` with offset X 33.2, `x: 100` puts the head at 66.8, and
   `z: 10` on the seesaw puts raw Z at 104.
 - `motion.park` moves the **head** to `machine.park.location` (machine coordinates, no camera offset).
+- Rotation axes with `limit_rotation` of a full turn or more take angles by whole turns: 200° on [-180, 180] → -160°.
+- Controller errors fail the request with `driver_error` (`data.response`, e.g. `"error:9"`); no answer in time
+  with `driver_timeout`. An alarm reported by the controller puts the machine in `alarm` until it is homed again.
 - `motion.check` also returns the raw axis targets (`axes`), which is handy for checking offsets and axis maps.
 
 ## 9. Cameras
 
 | Method | Read-only | Params | Result |
 |---|---|---|---|
-| `camera.list` | yes | – | `[{id, name, looking, location, stream_url, snapshot_url, width, height, units_per_pixel}]` |
-| `camera.snapshot` | yes | `id`, `format` (`jpeg`, `png`), `settle` (bool) | `{"url": "/cameras/<id>/frames/<n>.jpg", "eventtime": t}` |
-| `camera.controls` | yes | `id` | Device controls (exposure, focus, white balance) with ranges and current values |
-| `camera.set_controls` | | `id`, `controls` | `{}` (also persisted to the config) |
+| `camera.list` | yes | – | `[{id, name, type, looking, head, location, stream_url, snapshot_url, width, height, units_per_pixel}]` |
+| `camera.snapshot` | yes | `id`, `overlay` (optional, e.g. `crosshair,scale`) | `{"url": "/cameras/<id>/frames/<n>.jpg", "frame": n, "width", "height", "eventtime"}`: a frame taken after the call; the last 10 are kept. Settling (waiting after a move) comes with vision |
+| `camera.controls` | yes | `id` | `v4l2` cameras: `[{name, type, min, max, step, default, value}]` from `v4l2-ctl --list-ctrls` (or the OpenCV values without it). The camera must be open (being watched) |
+| `camera.set_controls` | | `id`, `controls` (`{name: value}`) | `{"problems": [...]}`. Applied now, **not saved**: put lasting values under the camera's `controls` in the configuration |
 | `camera.reopen` | | `id` | `{}`: closes and reopens the device |
-| `camera.devices` | yes | – | Devices found on the host (USB serial, vendor:product, path, formats) to pick from in setup |
+| `camera.devices` | yes | – | Video devices on the server: `[{path, name, index, capture, usb_id, usb_serial, manufacturer, product, links}]`, for the `device:` selector |
 
-Streams: `GET /cameras/<id>/stream.mjpg` (multipart MJPEG, `?fps=` to reduce), `GET /cameras/<id>/snapshot.jpg`.
-Optional overlays (`?overlay=crosshair,scale`) are drawn server-side so every front end gets them. WebRTC is planned;
-`camera.list` will then add a `webrtc` entry.
+Camera status fields: `looking`, `location`, `streaming`, `viewers`, `fps` (measured), `width`, `height`,
+`units_per_pixel`, `last_error`; `v4l2` adds `device`, `matched_by`, `requested` and `actual` (format).
+
+Streams: `GET /cameras/<id>/stream.mjpg` (multipart MJPEG; `?fps=` to reduce, `?overlay=`, `?frames=N` to stop after
+N frames), `GET /cameras/<id>/snapshot.jpg`, `GET /cameras/<id>/frames/<n>.jpg`. Overlays (`crosshair`, `scale`,
+`grid`, `info`) are drawn server-side so every front end gets them. Details: [`cameras.md`](cameras.md). WebRTC is
+planned; `camera.list` will then add a `webrtc` entry.
 
 ## 10. Actuators and feeders
 
@@ -349,8 +356,22 @@ Imports are jobs that can take a while: they return when done (or with `wait: fa
 
 | Method | Params | Result |
 |---|---|---|
-| `gcode.send` | `driver`, `command` (one or more lines) | `{"responses": ["ok", ...]}`. Bypasses the motion safety checks: the UI should warn. Refused while a job runs (`busy`) |
-| `gcode.subscribe` | `driver` (optional) | `{}`; then `notify_gcode` with every line sent and received, for console views |
+| `gcode.send` | `command` (one or more lines, `\n`-separated), `driver` (optional if there is only one G-code driver), `timeout` (ms, optional; default: the driver's `timeout`) | `{"responses": ["ok", ...], "ok": bool}`. A controller error ends the command early with `ok: false` and the error as the last response; it is not an API error. Bypasses the motion safety checks: the UI should warn. Refused while a job runs (`busy`) |
+| `gcode.subscribe` | `driver` (optional; default all) | `{}`; then `notify_gcode` with every line sent and received, for console views (WebSocket only) |
+| `gcode.unsubscribe` | – | `{}` |
+| `gcode.history` | `driver` (optional), `limit` (1–1000, default 200) | The last lines sent and received, oldest first: `[{driver, direction, line, eventtime}]` (read-only) |
+
+Notes:
+
+- Works on a disabled machine: the port is opened on demand (e.g. to read grblHAL's `$$`, all settings, before
+  enabling).
+- Escapes like `\x18` (Ctrl-X) and `\u0085` are decoded, so control bytes can be typed. Commands in the driver's
+  `realtime` list (grbl: `?`, `!`, `~`) are sent as bytes without waiting; their answers arrive as `notify_gcode`.
+- After the command the driver reads the position back (if it has `GET_POSITION_COMMAND`), so raw moves don't
+  leave TinkerPnP with a wrong position. Other state changes made behind its back (e.g. `$SLP`, sleep) aren't
+  tracked.
+- Requests go through the same motion thread as moves, so a console command waits until a running move has
+  finished.
 
 ## 18. Notifications (summary)
 

@@ -42,6 +42,10 @@ plugins: [pip package names]
 
 ## Key concepts
 
+- **Drivers** (`simulated`, `gcode`, later `klipper`) and every G-code command, template and timeout are described in
+  [`drivers.md`](drivers.md).
+- **Cameras** (`simulated`, `v4l2`): device selectors, formats, controls, transforms and overlays are described in
+  [`cameras.md`](cameras.md).
 - **Axes and transforms.** `controller` axes belong to a driver and have a G-code letter. `mapped` (linear map of
   one input axis), `cam` (CW/CCW cam), `linear_transform` (combination of several axes) and `virtual` (no hardware)
   are computed. A nozzle on a seesaw Z simply names a `mapped` axis as its Z.
@@ -51,7 +55,7 @@ plugins: [pip package names]
   object = head position + offset. Machine-mounted cameras have a fixed `location` instead.
 - **Acceleration where it applies:** axes can say `acceleration_applies_in: firmware` (informational, the value
   lives in the controller) or `driver` (sent with each move, if the driver has a command for it). The UI shows which.
-- **Device matching for cameras:** a list of selectors tried in order (USB serial, USB vendor:product id, stable
+- **Device matching for cameras:** a list of selectors tried in order (USB serial, USB vendor:product id, device name, stable
   `/dev/v4l/by-path` or `by-id` paths). USB port paths break when cables move, so they're the last resort.
 - **Sequences:** `machine.on_enable` and `on_home` are lists of steps, so behaviour is configured, not coded:
   `home`, `park` (safe Z, then the head to `machine.park.location`), `safe_z`, `{actuate: {pump: off, ...}}`,
