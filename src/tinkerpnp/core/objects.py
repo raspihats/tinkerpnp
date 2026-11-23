@@ -1,14 +1,16 @@
 """Built-in object types: settings models (validation + JSON Schema) and runtime classes (status for the API).
 
-Phase 0: simulated drivers and cameras work; the `gcode` driver and `v4l2` camera are registered with their full
-settings (so real machine configs validate) but report "not implemented yet" at runtime.
+The simulated driver and camera work without hardware. The `gcode` driver and `v4l2` camera are registered with their
+full settings (so real machine configs validate) but are not implemented yet (phase 1).
 """
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .errors import MachineError, Stopped
 from .registry import registry
 from .units import Acceleration, DurationMs, Length, LengthOrAngle, Speed
 
@@ -76,17 +78,71 @@ class MachineObject:
 
 # ── Drivers ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
+class DriverBase(MachineObject):
+    """The motion backend interface (design.md, 3.4). All methods run on the machine's motion thread, except
+    `stop` and `cancel`, which are called from anywhere and must return quickly. Blocking methods return when the
+    controller has finished, and raise Stopped when the machine's stop event is set while they wait."""
+    kind = "driver"
+
+    def connect(self) -> None: ...
+
+    def enable(self) -> None: ...
+
+    def disable(self) -> None: ...
+
+    def home(self, axes: list["ControllerAxis"]) -> None:
+        raise MachineError("driver_error", f"{self.name} can't home")
+
+    def move(self, targets: dict["ControllerAxis", float], speed: float) -> None:
+        """Move the axes to raw positions; speed is a fraction (0..1] of each axis's feed."""
+        raise MachineError("driver_error", f"{self.name} can't move")
+
+    def actuate(self, actuator: "ActuatorBase", value: Any) -> None:
+        raise MachineError("driver_error", f"{self.name} can't switch actuators")
+
+    def stop(self) -> str:
+        """Abort motion now. Returns the machine state afterwards: "idle" or "alarm"."""
+        return "idle"
+
+    def cancel(self) -> None:
+        """Abort the current jog (the machine stays usable)."""
+
+
 class SimulatedDriverSettings(Settings):
-    pass
+    time_scale: float = Field(1.0, ge=0, description="Simulated moves take distance/feed × this; 0 = instant")
+    home_time: DurationMs = Field(1000.0, description="How long simulated homing takes (before time_scale)")
 
 
 @registry.register("driver", "simulated", SimulatedDriverSettings, "Simulated driver")
-class SimulatedDriver(MachineObject):
-    """A driver without hardware, for development and tests."""
-    kind = "driver"
+class SimulatedDriver(DriverBase):
+    """A driver without hardware, for development and tests. Moves take realistic time and report positions
+    while they run."""
 
     def setup(self) -> None:
         self._status.update(connected=True, firmware="simulated", port=None, last_error=None)
+
+    def _wait(self, seconds: float) -> None:
+        if self.machine.stop_event.wait(seconds):
+            raise Stopped()
+
+    def home(self, axes: list["ControllerAxis"]) -> None:
+        self._wait(self.settings.home_time / 1000.0 * self.settings.time_scale)
+        self.machine.set_axis_positions({a.id: a.settings.home for a in axes}, homed=True)
+
+    def move(self, targets: dict["ControllerAxis", float], speed: float) -> None:
+        start = {a: a.position for a in targets}
+        duration = max((abs(t - start[a]) / ((a.settings.feed or 50.0) * speed) for a, t in targets.items()),
+                       default=0.0) * self.settings.time_scale
+        t0 = time.monotonic()
+        while True:
+            frac = 1.0 if duration <= 0 else min(1.0, (time.monotonic() - t0) / duration)
+            self.machine.set_axis_positions({a.id: start[a] + (t - start[a]) * frac for a, t in targets.items()})
+            if frac >= 1.0:
+                return
+            self._wait(0.05)
+
+    def actuate(self, actuator: "ActuatorBase", value: Any) -> None:
+        pass
 
 
 class GcodeDriverSettings(Settings):
@@ -102,12 +158,14 @@ class GcodeDriverSettings(Settings):
 
 @registry.register("driver", "gcode", GcodeDriverSettings, "G-code controller",
                    "G-code controller (grblHAL, Marlin, Smoothieware, Duet, TinyG) with OpenPnP-compatible commands")
-class GcodeDriver(MachineObject):
-    kind = "driver"
+class GcodeDriver(DriverBase):
+    NOT_YET = "the gcode driver is not implemented yet (phase 1)"
 
     def setup(self) -> None:
-        self._status.update(connected=False, firmware=None, port=self.settings.port,
-                            last_error="gcode driver not implemented yet (phase 1)")
+        self._status.update(connected=False, firmware=None, port=self.settings.port, last_error=self.NOT_YET)
+
+    def connect(self) -> None:
+        raise MachineError("driver_error", self.NOT_YET, driver=self.id)
 
 
 # ── Axes ───────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -116,7 +174,9 @@ class ControllerAxisSettings(Settings):
     driver: str
     letter: str = Field(..., min_length=1, max_length=1)
     kind: Literal["linear", "rotation"] = "linear"
-    home: LengthOrAngle = 0.0
+    home: LengthOrAngle = Field(0.0, description="Position after homing")
+    homing: bool | None = Field(None, description="Has a home switch. Default: linear axes yes, rotation axes no "
+                                                  "(they keep their position and count as homed after homing)")
     soft_limits: Range | None = None
     safe_zone: Range | None = None
     limit_rotation: Range | None = None
@@ -141,23 +201,44 @@ class AxisBase(MachineObject):
     kind = "axis"
     axis_kind = "linear"
     homeable = False
+    tolerance = 1e-6
 
     @property
     def position(self) -> float:
         return self._status["position"]
 
+    @property
+    def homed(self) -> bool:
+        return bool(self._status.get("homed"))
+
 
 @registry.register("axis", "controller", ControllerAxisSettings, "Controller axis")
 class ControllerAxis(AxisBase):
     """An axis driven by a motion backend (G-code letter or Klipper axis)."""
-    homeable = True
-
     def setup(self) -> None:
         s = self.settings
         self.axis_kind = s.kind
+        self.homeable = s.homing if s.homing is not None else s.kind == "linear"
+        self.tolerance = s.tolerance
+        self.driver: DriverBase = self.machine.get("driver", s.driver)
         self._status.update(kind=s.kind, position=s.home, homed=False, driver=s.driver, letter=s.letter,
+                            homing=self.homeable,
                             soft_limits=list(s.soft_limits) if s.soft_limits else None,
                             safe_zone=list(s.safe_zone) if s.safe_zone else None)
+
+    def limits(self) -> tuple[float, float] | None:
+        s = self.settings
+        return s.soft_limits or s.limit_rotation
+
+    def safe_value(self) -> float | None:
+        """The nearest position inside the safe zone (None: no safe zone or already inside)."""
+        zone = self.settings.safe_zone
+        if not zone:
+            return None
+        low, high = zone
+        if low - self.tolerance <= self.position <= high + self.tolerance:
+            return None
+        return min(max(self.position, low), high)
 
 
 @registry.register("axis", "virtual", VirtualAxisSettings, "Virtual axis")
@@ -316,12 +397,45 @@ class GcodeActuatorSettings(Settings):
     on_disable: Any = None
 
 
+_TRUE = {"on", "true", "yes", "1"}
+_FALSE = {"off", "false", "no", "0"}
+
+
 class ActuatorBase(MachineObject):
     kind = "actuator"
 
     def setup(self) -> None:
         self._status.update(value_type=self.settings.value, value=None,
                             readable=bool(getattr(self.settings, "read", None)))
+
+    def coerce(self, value: Any) -> Any:
+        """Check a value against value_type. Booleans also accept on/off (YAML 1.2 reads `off` as a string)."""
+        vt = self.settings.value
+        if vt == "boolean":
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)) and value in (0, 1):
+                return bool(value)
+            if isinstance(value, str) and value.lower() in _TRUE | _FALSE:
+                return value.lower() in _TRUE
+        elif vt == "double":
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return float(value)
+        elif isinstance(value, str):
+            return value
+        raise MachineError("invalid_params", f"{self.name} takes a {vt} value, not {value!r}")
+
+    def set(self, value: Any) -> Any:
+        value = self.coerce(value)
+        self.write(value)
+        self.update(value=value)
+        return value
+
+    def write(self, value: Any) -> None:
+        """Send the value to the hardware."""
+
+    def read(self) -> Any:
+        raise MachineError("invalid_params", f"{self.name} can't be read")
 
 
 @registry.register("actuator", "simulated", SimulatedActuatorSettings, "Simulated actuator")
@@ -332,6 +446,9 @@ class SimulatedActuator(ActuatorBase):
 @registry.register("actuator", "gcode", GcodeActuatorSettings, "G-code actuator")
 class GcodeActuator(ActuatorBase):
     """Switched with G-code through a driver (e.g. M64 P0 / M65 P0)."""
+
+    def write(self, value: Any) -> None:
+        self.machine.get("driver", self.settings.driver).actuate(self, value)
 
 
 # ── Cameras ────────────────────────────────────────────────────────────────────────────────────────────────────────

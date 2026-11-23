@@ -27,6 +27,7 @@ class AppState:
     connections: dict[int, "Connection"] = field(default_factory=dict)
     started: float = field(default_factory=time.monotonic)
     _ids: Any = field(default_factory=lambda: itertools.count(1))
+    _machine_state: str | None = None
 
     def eventtime(self) -> float:
         return round(time.monotonic() - self.started, 3)
@@ -39,6 +40,10 @@ class AppState:
     def on_status(self, name: str, delta: dict) -> None:
         for conn in list(self.connections.values()):
             conn.on_status(name, delta)
+        if name == "machine" and "state" in delta and delta["state"] != self._machine_state:
+            previous, self._machine_state = self._machine_state, delta["state"]
+            self.notify_all("notify_machine_state", {"state": delta["state"], "previous": previous,
+                                                     "message": self.machine.state.status().get("message")})
 
     def notify_all(self, method: str, params: dict) -> None:
         for conn in list(self.connections.values()):
@@ -46,8 +51,11 @@ class AppState:
 
     def replace_machine(self, machine: Machine) -> None:
         """Swap in a machine rebuilt from a changed configuration."""
-        self.machine.remove_listener(self.on_status)
+        old = self.machine
+        old.remove_listener(self.on_status)
+        old.close()
         self.machine = machine
+        self._machine_state = machine.state.status()["state"]
         machine.add_listener(self.on_status)
 
 
@@ -124,7 +132,7 @@ def create_app(machine: Machine, ui_dir: str | os.PathLike | None = None) -> Fas
     store = None
     if machine.config.path and os.path.isfile(machine.config.path):
         store = ConfigStore(machine.config.path, machine.config, machine.registry)
-    state = AppState(machine=machine, store=store)
+    state = AppState(machine=machine, store=store, _machine_state=machine.state.status()["state"])
     app.state.tinker = state
     machine.add_listener(state.on_status)
 
@@ -134,6 +142,20 @@ def create_app(machine: Machine, ui_dir: str | os.PathLike | None = None) -> Fas
         conn = Connection(state, ws, remote=f"{ws.client.host}:{ws.client.port}" if ws.client else "")
         state.connections[conn.id] = conn
         writer = asyncio.create_task(conn.writer())
+        requests: asyncio.Queue = asyncio.Queue()
+
+        async def handle(message: Any) -> None:
+            response = await rpc.handle(message, conn)
+            if response is not None:
+                conn.send(response)
+
+        async def in_order() -> None:
+            # requests on one connection run one after another (a move finishes before the next starts) ...
+            while True:
+                await handle(await requests.get())
+
+        runner = asyncio.create_task(in_order())
+        immediate: set[asyncio.Task] = set()
         try:
             while True:
                 text = await ws.receive_text()
@@ -143,12 +165,18 @@ def create_app(machine: Machine, ui_dir: str | os.PathLike | None = None) -> Fas
                     conn.send({"jsonrpc": "2.0", "id": None,
                                "error": RpcError("parse_error", "invalid JSON").as_error()})
                     continue
-                response = await rpc.handle(message, conn)
-                if response is not None:
-                    conn.send(response)
+                method = rpc.methods.get(message.get("method")) if isinstance(message, dict) else None
+                if method is not None and method.immediate:
+                    # ... except immediate ones (machine.stop, motion.jog_cancel), which overtake the queue
+                    task = asyncio.create_task(handle(message))
+                    immediate.add(task)
+                    task.add_done_callback(immediate.discard)
+                else:
+                    requests.put_nowait(message)
         except WebSocketDisconnect:
             pass
         finally:
+            runner.cancel()
             writer.cancel()
             state.connections.pop(conn.id, None)
 

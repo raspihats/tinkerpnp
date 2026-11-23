@@ -7,6 +7,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from ..core.errors import MachineError
+
 log = logging.getLogger("tinkerpnp.api")
 
 # name -> (code, http status)
@@ -93,9 +95,12 @@ class Dispatcher:
                    and p.name not in params]
         if missing:
             raise RpcError("invalid_params", f"missing parameter(s): {', '.join(missing)}")
-        result = method.fn(ctx=ctx, **params)
-        if inspect.isawaitable(result):
-            result = await result
+        try:
+            result = method.fn(ctx=ctx, **params)
+            if inspect.isawaitable(result):
+                result = await result
+        except MachineError as exc:
+            raise RpcError(exc.name, exc.message, **exc.data) from None
         return result
 
     async def handle(self, message: Any, ctx: Any) -> dict | list | None:

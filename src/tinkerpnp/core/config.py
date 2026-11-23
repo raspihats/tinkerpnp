@@ -281,6 +281,24 @@ def _check_references(cfg: MachineConfig) -> None:
     if park is not None:
         need("head", park.head, "machine.park.head")
 
+    # sequences: home, park, safe_z, {actuate: {id: value}}, {dwell: ms}
+    for seq in ("on_enable", "on_home"):
+        for i, step in enumerate(getattr(cfg.machine, seq)):
+            where = f"machine.{seq}[{i}]"
+            if step in ("home", "park", "safe_z"):
+                if step == "home" and seq == "on_home":
+                    problems.append(ConfigProblem(where, "home inside on_home would loop"))
+                if step == "park" and park is None:
+                    problems.append(ConfigProblem(where, "park needs machine.park"))
+            elif isinstance(step, dict) and list(step) == ["actuate"] and isinstance(step["actuate"], dict):
+                for act_id in step["actuate"]:
+                    need("actuator", str(act_id), f"{where}.actuate.{act_id}")
+            elif isinstance(step, dict) and list(step) == ["dwell"] and isinstance(step["dwell"], (int, float)):
+                pass
+            else:
+                problems.append(ConfigProblem(where, f"unknown step {step!r}; use home, park, safe_z, "
+                                                     "{actuate: {id: value}} or {dwell: ms}"))
+
 
 def _finish(cfg: MachineConfig, strict: bool) -> MachineConfig:
     if strict and cfg.problems:

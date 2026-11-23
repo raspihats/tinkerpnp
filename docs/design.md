@@ -195,7 +195,9 @@ limit.
 
 ## 4. OpenPnP compatibility
 
-OpenPnP's XML files are the interchange format. Plan:
+OpenPnP's XML files are the interchange format. Compatibility means the files, not identical behaviour: every
+place where TinkerPnP behaves differently (park location, safe Z, homing, stop, ...) is listed in
+[`openpnp-differences.md`](openpnp-differences.md), with how the importer converts it. Plan:
 
 | OpenPnP file | Content | Import | Export |
 |---|---|---|---|

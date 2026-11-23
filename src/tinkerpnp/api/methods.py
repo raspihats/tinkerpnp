@@ -1,6 +1,8 @@
-"""Phase 0 API methods: server.*, machine.objects.*, config.* (read side). See docs/api.md."""
+"""API methods: server.*, machine.*, motion.*, actuator.*, config.*. See docs/api.md."""
 from __future__ import annotations
 
+import asyncio
+import logging
 import socket
 from typing import TYPE_CHECKING, Any
 
@@ -14,6 +16,7 @@ if TYPE_CHECKING:
     from .server import Connection
 
 rpc = Dispatcher()
+log = logging.getLogger("tinkerpnp.api")
 
 
 # ── server.* ───────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -88,6 +91,171 @@ def objects_subscribe(ctx: "Connection", objects: dict, rate: float = 10.0) -> d
         raise RpcError("invalid_params", "rate must be between 0.5 and 60 updates per second")
     ctx.subscribe(req, rate)
     return {"eventtime": ctx.app_state.eventtime(), "status": ctx.app_state.machine.query(req)}
+
+
+# ── machine.* / motion.* / actuator.* ──────────────────────────────────────────────────────────────────────────
+# Everything that moves runs on the machine's motion thread, one request after another.
+
+async def _run(ctx: "Connection", fn, *args, wait: bool = True, **kwargs):
+    machine = ctx.app_state.machine
+    future = asyncio.wrap_future(machine.submit(fn, *args, **kwargs))
+    if wait:
+        return await future
+
+    def done(f: asyncio.Future) -> None:
+        if not f.cancelled() and f.exception() is not None:
+            log.warning("background request failed: %s", f.exception())
+    future.add_done_callback(done)
+    return None
+
+
+def _head(ctx: "Connection", head: str | None):
+    machine = ctx.app_state.machine
+    heads = machine.of_kind("head")
+    if head is None:
+        if len(heads) != 1:
+            raise RpcError("invalid_params", "this machine has several heads; give head")
+        return heads[0]
+    obj = machine.objects.get(f"head/{head}")
+    if obj is None:
+        raise RpcError("not_found", f"no head {head!r}", what="head", id=head)
+    return obj
+
+
+@rpc.method("machine.enable")
+async def machine_enable(ctx: "Connection") -> dict:
+    """Enable the drivers, set actuators to their on_enable values, run machine.on_enable (e.g. home)."""
+    await _run(ctx, ctx.app_state.machine.enable)
+    return {}
+
+
+@rpc.method("machine.disable")
+async def machine_disable(ctx: "Connection") -> dict:
+    """Actuators to their on_disable values, drivers disabled (motors released); the machine must be homed again."""
+    await _run(ctx, ctx.app_state.machine.disable)
+    return {}
+
+
+@rpc.method("machine.home")
+async def machine_home(ctx: "Connection", axes: list | None = None) -> dict:
+    """Home all (or the given) controller axes, then run machine.on_home (e.g. park)."""
+    await _run(ctx, ctx.app_state.machine.home, axes)
+    return {}
+
+
+@rpc.method("machine.stop", immediate=True)
+def machine_stop(ctx: "Connection", reason: str | None = None) -> dict:
+    """Abort motion now; queued requests fail with `stopped`."""
+    ctx.app_state.machine.stop(reason)
+    return {}
+
+
+@rpc.method("machine.clear_alarm")
+async def machine_clear_alarm(ctx: "Connection") -> dict:
+    """Leave the alarm state where the controller allows it."""
+    machine = ctx.app_state.machine
+
+    def clear() -> None:
+        st = machine.state.status()
+        if st["state"] == "alarm":
+            machine.state.update(state="idle" if st["enabled"] else "disabled", alarm=None, message=None)
+    await _run(ctx, clear)
+    return {}
+
+
+@rpc.method("machine.select_tool")
+def machine_select_tool(ctx: "Connection", object: str) -> dict:
+    """Set machine.selected_tool (shared by all clients)."""
+    machine = ctx.app_state.machine
+    ctx.app_state.machine.planner.resolve(object)
+    machine.state.update(selected_tool=object)
+    return {}
+
+
+@rpc.method("motion.move_to")
+async def motion_move_to(ctx: "Connection", object: str, location: dict | None = None,
+                         position: float | None = None, speed: float = 1.0, safe_z: str = "auto",
+                         wait: bool = True) -> dict:
+    """Move a nozzle, head camera or axis/<id> to a location (machine frame), with safe Z before X/Y travel."""
+    planner = ctx.app_state.machine.planner
+    obj = planner.resolve(object)
+    if object.startswith("axis/"):
+        if position is None:
+            raise RpcError("invalid_params", "axes take position")
+        location = {"position": position}
+    elif location is None:
+        raise RpcError("invalid_params", "missing location")
+    result = await _run(ctx, planner.move_to, obj, location, speed, safe_z, wait=wait)
+    return {"location": result} if wait else {}
+
+
+@rpc.method("motion.jog")
+async def motion_jog(ctx: "Connection", object: str, delta: dict, speed: float = 1.0) -> dict:
+    """Move relative to the current location; applies machine.jog.safe_z."""
+    planner = ctx.app_state.machine.planner
+    obj = planner.resolve(object)
+    return {"location": await _run(ctx, planner.jog, obj, delta, speed)}
+
+
+@rpc.method("motion.jog_cancel", immediate=True)
+def motion_jog_cancel(ctx: "Connection") -> dict:
+    """Abort the current jog."""
+    ctx.app_state.machine.cancel_jog()
+    return {}
+
+
+@rpc.method("motion.park")
+async def motion_park(ctx: "Connection", head: str | None = None, axes: str = "all") -> dict:
+    """Safe Z, then the head's camera to machine.park.location (axes: xy, z or all)."""
+    h = _head(ctx, head)
+    return {"location": await _run(ctx, ctx.app_state.machine.planner.park, h, axes)}
+
+
+@rpc.method("motion.move_to_safe_z")
+async def motion_safe_z(ctx: "Connection", head: str | None = None) -> dict:
+    """Bring every nozzle on the head into its safe zone."""
+    h = _head(ctx, head)
+    await _run(ctx, ctx.app_state.machine.planner.move_to_safe_z, h)
+    return {}
+
+
+@rpc.method("motion.position", read_only=True)
+def motion_position(ctx: "Connection", object: str) -> dict:
+    """Current location of a nozzle, head camera or axis."""
+    planner = ctx.app_state.machine.planner
+    return {"location": planner.location(planner.resolve(object))}
+
+
+@rpc.method("motion.check", read_only=True)
+def motion_check(ctx: "Connection", object: str, location: dict) -> dict:
+    """Dry run of the safety checks for a move; nothing moves."""
+    machine = ctx.app_state.machine
+    planner = machine.planner
+    targets = planner.targets(planner.resolve(object), location)
+    problems = planner.problems(targets)
+    st = machine.state.status()
+    if not st["enabled"]:
+        problems.insert(0, {"name": "not_enabled", "message": "the machine is disabled"})
+    elif not st["homed"]:
+        problems.insert(0, {"name": "not_homed", "message": "home the machine first"})
+    return {"ok": not problems, "problems": problems,
+            "axes": {a.id: round(v, 4) for a, v in targets.items()}}
+
+
+@rpc.method("actuator.set")
+async def actuator_set(ctx: "Connection", id: str, value: Any) -> dict:
+    """Switch an actuator (bool / number / string per its value_type). For manual control and tests."""
+    return {"value": await _run(ctx, ctx.app_state.machine.actuate, id, value)}
+
+
+@rpc.method("actuator.read")
+async def actuator_read(ctx: "Connection", id: str) -> dict:
+    """Read a readable actuator (e.g. a vacuum sensor)."""
+    machine = ctx.app_state.machine
+    act = machine.objects.get(f"actuator/{id}")
+    if act is None:
+        raise RpcError("not_found", f"no actuator {id!r}", what="actuator", id=id)
+    return {"value": await _run(ctx, act.read)}
 
 
 # ── config.* (read side) ───────────────────────────────────────────────────────────────────────────────────────────

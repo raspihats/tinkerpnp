@@ -1,11 +1,25 @@
-"""The machine runtime: builds objects from a validated configuration and publishes their status changes."""
+"""The machine runtime: builds objects from a validated configuration, publishes their status changes, and runs
+machine control (enable, home, disable, stop, sequences) on one motion thread.
+
+Threading: everything that talks to drivers runs on `worker` (one thread), one request after another, via `submit`.
+`stop` and `cancel_jog` run on the caller's thread: they set `stop_event`, which every blocking driver call watches,
+and make requests that were queued before the stop fail with `stopped`.
+"""
 from __future__ import annotations
 
+import concurrent.futures
+import logging
+import threading
 from typing import Any, Callable
 
 from .config import MachineConfig
-from .objects import AxisBase, CameraBase, Head, MachineObject, MappedAxis, Nozzle, Settings
+from .errors import MachineError, Stopped
+from .motion import Motion
+from .objects import (ActuatorBase, AxisBase, CameraBase, ControllerAxis, DriverBase, Head, MachineObject, MappedAxis,
+                      Nozzle, Settings)
 from .registry import Registry, registry as default_registry
+
+log = logging.getLogger("tinkerpnp.machine")
 
 Listener = Callable[[str, dict], None]
 
@@ -55,6 +69,179 @@ class Machine:
         self.motion._status["safe_z"] = self._all_safe()
         self._building = False
 
+        self.planner = Motion(self)
+        self.worker = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="motion")
+        self.stop_event = threading.Event()
+        self._stop_generation = 0
+        self._queued = 0
+        self._lock = threading.Lock()
+
+    def close(self) -> None:
+        """Stop motion and the worker thread (the machine is being replaced or the server stops)."""
+        self.stop("shutting down")
+        self.worker.shutdown(wait=False, cancel_futures=True)
+
+    # ── running requests on the motion thread ──────────────────────────────────────────────────────────────────
+    def submit(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> concurrent.futures.Future:
+        """Queue fn on the motion thread. If the machine is stopped before it runs, it fails with Stopped."""
+        generation = self._stop_generation
+        with self._lock:
+            self._queued += 1
+            self.motion.update(queue_length=self._queued)
+
+        def run() -> Any:
+            with self._lock:
+                self._queued -= 1
+                self.motion.update(queue_length=self._queued)
+            if generation != self._stop_generation:
+                raise Stopped("cancelled by machine.stop")
+            self.stop_event.clear()
+            return fn(*args, **kwargs)
+
+        return self.worker.submit(run)
+
+    def stop(self, reason: str | None = None) -> None:
+        """Abort motion now and cancel queued requests. Safe to call from any thread."""
+        self._stop_generation += 1
+        self.stop_event.set()
+        states = []
+        for driver in self.of_kind("driver"):
+            try:
+                states.append(driver.stop())
+            except Exception as exc:  # stopping must not fail half-way
+                log.exception("stop failed on %s", driver.name)
+                states.append("alarm")
+                driver.update(last_error=str(exc))
+        st = self.state.status()
+        if st["enabled"]:
+            if "alarm" in states:
+                self._set_state("alarm", message=reason or "stopped", alarm="stopped")
+            else:
+                self._set_state("idle", message=reason or "stopped")
+        self.motion.update(moving=False)
+
+    def cancel_jog(self) -> None:
+        self.stop_event.set()
+        for driver in self.of_kind("driver"):
+            driver.cancel()
+
+    def _set_state(self, state: str, message: str | None = None, **fields: Any) -> None:
+        self.state.update(state=state, message=message, **fields)
+
+    def _update_homed(self) -> None:
+        homeable = [a for a in self.of_kind("axis") if isinstance(a, ControllerAxis)]
+        self.state.update(homed=bool(homeable) and all(a.homed for a in homeable))
+
+    # ── machine control (run these on the motion thread, through submit) ───────────────────────────────────────
+    def drivers(self) -> list[DriverBase]:
+        return self.of_kind("driver")  # type: ignore[return-value]
+
+    def enable(self) -> None:
+        if self.state.status()["enabled"]:
+            return
+        self._set_state("enabling")
+        try:
+            for driver in self.drivers():
+                driver.connect()
+                driver.enable()
+            self.state.update(enabled=True, alarm=None)
+            self._set_state("idle")
+            for act in self.of_kind("actuator"):
+                if act.settings.on_enable is not None:
+                    act.set(act.settings.on_enable)
+            self.run_sequence(self.config.machine.on_enable, "machine.on_enable")
+        except Exception as exc:
+            message = exc.message if isinstance(exc, MachineError) else str(exc)
+            try:
+                self.disable()
+            except Exception:
+                log.exception("disable after a failed enable")
+            self._set_state("disabled", message=f"enable failed: {message}")
+            raise
+
+    def disable(self) -> None:
+        errors = []
+        for act in self.of_kind("actuator"):
+            if act.settings.on_disable is not None and self.state.status()["enabled"]:
+                try:
+                    act.set(act.settings.on_disable)
+                except Exception as exc:
+                    errors.append(f"{act.name}: {exc}")
+        for driver in self.drivers():
+            try:
+                driver.disable()
+            except Exception as exc:
+                errors.append(f"{driver.name}: {exc}")
+        # motors are released: positions can't be trusted any more
+        for axis in self.of_kind("axis"):
+            if isinstance(axis, ControllerAxis):
+                axis.update(homed=False)
+        self._refresh_dependents()
+        self.state.update(enabled=False, homed=False, alarm=None)
+        self._set_state("disabled", message="; ".join(errors) or None)
+
+    def home(self, axes: list[str] | None = None) -> None:
+        self.planner.require_ready_for_homing()
+        controller = [a for a in self.of_kind("axis") if isinstance(a, ControllerAxis)]
+        if axes is not None:
+            if not isinstance(axes, list):
+                raise MachineError("invalid_params", "axes must be a list of axis ids")
+            known = {a.id: a for a in controller}
+            missing = [a for a in axes if a not in known]
+            if missing:
+                raise MachineError("not_found", f"no controller axis {', '.join(missing)}", what="axis", id=missing[0])
+            controller = [known[a] for a in axes]
+        self._set_state("homing")
+        try:
+            by_driver: dict[DriverBase, list[ControllerAxis]] = {}
+            for a in controller:
+                if a.homeable:
+                    by_driver.setdefault(a.driver, []).append(a)
+            for driver, driver_axes in by_driver.items():
+                driver.home(driver_axes)
+            for a in controller:
+                if not a.homeable:          # no switch: keeps its position, counts as homed
+                    a.update(homed=True)
+            self._refresh_dependents()
+        finally:
+            self._update_homed()
+            if self.state.status()["state"] == "homing":
+                self._set_state("idle")
+        if self.state.status()["homed"]:
+            self.run_sequence(self.config.machine.on_home, "machine.on_home")
+
+    def actuate(self, actuator_id: str, value: Any) -> Any:
+        act = self.objects.get(f"actuator/{actuator_id}")
+        if not isinstance(act, ActuatorBase):
+            raise MachineError("not_found", f"no actuator {actuator_id!r}", what="actuator", id=actuator_id)
+        if not self.state.status()["enabled"]:
+            raise MachineError("not_enabled", "the machine is disabled")
+        return act.set(value)
+
+    def run_sequence(self, steps: list, where: str) -> None:
+        """Steps: home, park, safe_z, {actuate: {id: value, ...}}, {dwell: ms}."""
+        heads = self.of_kind("head")
+        for i, step in enumerate(steps):
+            if step == "home":
+                if where == "machine.on_home":
+                    raise MachineError("invalid_params", f"{where}[{i}]: home inside on_home would loop")
+                self.home()
+            elif step in ("park", "safe_z"):
+                park = self.config.machine.park
+                for head in heads:
+                    if step == "park" and park is not None and park.head == head.id:
+                        self.planner.park(head, "all")
+                    else:
+                        self.planner.move_to_safe_z(head)
+            elif isinstance(step, dict) and len(step) == 1 and "actuate" in step:
+                for act_id, value in (step["actuate"] or {}).items():
+                    self.actuate(act_id, value)
+            elif isinstance(step, dict) and len(step) == 1 and "dwell" in step:
+                if self.stop_event.wait(float(step["dwell"]) / 1000.0):
+                    raise Stopped()
+            else:
+                raise MachineError("invalid_params", f"{where}[{i}]: unknown step {step!r}")
+
     # ── lookup ─────────────────────────────────────────────────────────────────────────────────────────────────
     def get(self, kind: str, obj_id: str) -> Any:
         return self.objects[f"{kind}/{obj_id}"]
@@ -94,11 +281,15 @@ class Machine:
     # ── simulation hooks (phase 0) ─────────────────────────────────────────────────────────────────────────────
     def set_axis_position(self, axis_id: str, position: float, homed: bool | None = None) -> None:
         """Set a raw axis position (simulated driver / tests) and refresh everything that depends on it."""
-        axis = self.get("axis", axis_id)
-        fields: dict[str, Any] = {"position": position}
-        if homed is not None:
-            fields["homed"] = homed
-        axis.update(**fields)
+        self.set_axis_positions({axis_id: position}, homed)
+
+    def set_axis_positions(self, positions: dict[str, float], homed: bool | None = None) -> None:
+        """Drivers report raw axis positions here; dependent objects (mapped axes, nozzles, ...) follow."""
+        for axis_id, position in positions.items():
+            fields: dict[str, Any] = {"position": round(position, 6)}
+            if homed is not None:
+                fields["homed"] = homed
+            self.get("axis", axis_id).update(**fields)
         self._refresh_dependents()
 
     def _refresh_dependents(self) -> None:

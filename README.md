@@ -4,9 +4,12 @@ An open, API-first pick-and-place host. It runs on a Raspberry Pi (or a PC) next
 browser. Started 2026-11-23.
 
 Status: **phase 0 (skeleton)**: configuration, object model, simulated machine, the read side of the API,
-configuration editing (`config.update`, history, undo) and a first web UI work.
+configuration editing (`config.update`, history, undo) and a first web UI work. Phase 1 (machine console) has
+started: enable/home/disable/stop, moves and jogs with safe Z and soft limits, and actuators work on the simulated
+machine; the G-code driver for grblHAL is next.
 See [`docs/design.md`](docs/design.md), the API specification
-[`docs/api.md`](docs/api.md) and the configuration format [`docs/config.md`](docs/config.md).
+[`docs/api.md`](docs/api.md), the configuration format [`docs/config.md`](docs/config.md), and where TinkerPnP
+behaves differently from OpenPnP: [`docs/openpnp-differences.md`](docs/openpnp-differences.md).
 
 Aims:
 

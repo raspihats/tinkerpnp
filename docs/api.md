@@ -200,6 +200,20 @@ of the design). Methods return when the motion has **finished** (`wait: false` r
 | `motion.position` | `object` | `{"location": {...}}` (read-only) |
 | `motion.check` | `object`, `location` | `{"ok": bool, "problems": [...]}`: dry-run of the safety checks, no motion (read-only) |
 
+How motion works (implemented in phase 1, step 1):
+
+- Requests that move or switch things run on one motion thread, in order of arrival. On a WebSocket, a connection's
+  requests are answered in order; *immediate* methods overtake: `machine.stop` sets a stop flag that every
+  driver wait watches, so the running move ends with `stopped`, and so does every request queued before the stop.
+- `move_to` with X/Y travel and `safe_z: auto`: first every nozzle on the head into its safe zone (a shared seesaw Z
+  moves once), then X, Y and rotation, then the object's own Z. Without X/Y travel everything moves together.
+- All targets are checked before anything moves: one target outside its soft limits (or `limit_rotation`) refuses
+  the whole move with `soft_limit`.
+- Locations are of the object itself: for `nozzle/N2` with offset X 33.2, `x: 100` puts the head at 66.8, and
+  `z: 10` on the seesaw puts raw Z at 104.
+- `motion.park` moves the **head** to `machine.park.location` (machine coordinates, no camera offset).
+- `motion.check` also returns the raw axis targets (`axes`), which is handy for checking offsets and axis maps.
+
 ## 9. Cameras
 
 | Method | Read-only | Params | Result |

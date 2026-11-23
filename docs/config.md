@@ -53,8 +53,14 @@ plugins: [pip package names]
   lives in the controller) or `driver` (sent with each move, if the driver has a command for it). The UI shows which.
 - **Device matching for cameras:** a list of selectors tried in order (USB serial, USB vendor:product id, stable
   `/dev/v4l/by-path` or `by-id` paths). USB port paths break when cables move, so they're the last resort.
-- **Sequences:** `machine.on_enable`, `on_home` and similar are lists of named actions (`home`, `park`,
-  `actuate: {pump: off}`, ...), so behaviour is configured, not coded.
+- **Sequences:** `machine.on_enable` and `on_home` are lists of steps, so behaviour is configured, not coded:
+  `home`, `park` (safe Z, then the head to `machine.park.location`), `safe_z`, `{actuate: {pump: off, ...}}`,
+  `{dwell: 200}` (ms). The loader checks them; `home` inside `on_home` is refused (it would loop).
+- **Homing:** `controller` axes with `homing: true` have a home switch and are set to their `home` position.
+  The default is true for linear axes and false for rotation axes; those keep their position and count as homed
+  once the machine homes. Disabling the machine releases the motors, so it must be homed again.
+- **Simulated driver:** `time_scale` (1 = moves take distance / feed, 0 = instant) and `home_time` make the
+  simulated machine behave like a real one for UI work, or instantly for tests.
 
 ## Editing and persistence
 
@@ -72,7 +78,7 @@ plugins: [pip package names]
 | `ReferenceMappedAxis` with `map-input-0/1`, `map-output-0/1` | `type: mapped`, `map: [[in0, out0], [in1, out1]]` |
 | `<nozzle axis-Z-id=... head-offsets=...>` | `heads.H1.nozzles.N1: {axes: {z: ...}, offset: {...}}` |
 | GcodeDriver `<command type=... head-mountable-id=...>` | Driver `commands:` (same names, same templates); actuator commands move to the actuator (`on:` / `off:`) |
-| Park location = where the head's camera goes | `machine.park.location` in machine coordinates |
+| Park location = where the head's camera goes | `machine.park.location`: the **head's** X/Y in machine coordinates (no camera offset), Z goes to safe Z first. Converted on import; see [`openpnp-differences.md`](openpnp-differences.md) |
 | Camera `unique-id` (includes USB port) | `device:` selector list |
 | Settings saved on normal exit | Saved on every edit |
 
