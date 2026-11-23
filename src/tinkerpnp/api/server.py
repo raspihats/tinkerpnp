@@ -14,6 +14,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 
 from .. import __version__
+from ..core.config_edit import ConfigStore
 from ..core.machine import Machine
 from .jsonrpc import RpcError
 from .methods import rpc
@@ -22,13 +23,32 @@ from .methods import rpc
 @dataclass
 class AppState:
     machine: Machine
+    store: ConfigStore | None = None
     connections: dict[int, "Connection"] = field(default_factory=dict)
-    config_revision: int = 1
     started: float = field(default_factory=time.monotonic)
     _ids: Any = field(default_factory=lambda: itertools.count(1))
 
     def eventtime(self) -> float:
         return round(time.monotonic() - self.started, 3)
+
+    @property
+    def config_revision(self) -> int:
+        return self.store.revision if self.store else 1
+
+    # status changes from the machine go to every subscribed connection
+    def on_status(self, name: str, delta: dict) -> None:
+        for conn in list(self.connections.values()):
+            conn.on_status(name, delta)
+
+    def notify_all(self, method: str, params: dict) -> None:
+        for conn in list(self.connections.values()):
+            conn.send_threadsafe({"jsonrpc": "2.0", "method": method, "params": params})
+
+    def replace_machine(self, machine: Machine) -> None:
+        """Swap in a machine rebuilt from a changed configuration."""
+        self.machine.remove_listener(self.on_status)
+        self.machine = machine
+        machine.add_listener(self.on_status)
 
 
 class Connection:
@@ -83,6 +103,10 @@ class Connection:
         if self._outbox is not None:
             self._outbox.put_nowait(message)
 
+    def send_threadsafe(self, message: dict) -> None:
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self.send, message)
+
     async def writer(self) -> None:
         assert self.websocket is not None and self._outbox is not None
         while True:
@@ -97,14 +121,12 @@ def create_app(machine: Machine, ui_dir: str | os.PathLike | None = None) -> Fas
     app = FastAPI(title="TinkerPnP API", version=__version__,
                   description="HTTP mirror of the JSON-RPC API; see docs/api.md. Subscriptions need the WebSocket.",
                   docs_url="/api/docs", openapi_url="/api/openapi.json")
-    state = AppState(machine=machine)
+    store = None
+    if machine.config.path and os.path.isfile(machine.config.path):
+        store = ConfigStore(machine.config.path, machine.config, machine.registry)
+    state = AppState(machine=machine, store=store)
     app.state.tinker = state
-
-    def broadcast(name: str, delta: dict) -> None:
-        for conn in list(state.connections.values()):
-            conn.on_status(name, delta)
-
-    machine.add_listener(broadcast)
+    machine.add_listener(state.on_status)
 
     @app.websocket("/websocket")
     async def websocket_endpoint(ws: WebSocket) -> None:

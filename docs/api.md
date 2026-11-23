@@ -247,6 +247,21 @@ writes the file. Every successful change bumps `revision`.
 `revision` gives optimistic locking: two front ends editing at once get a `conflict` instead of overwriting each
 other. Notification `notify_config_changed` tells every client which paths changed.
 
+How `config.update` works (implemented in phase 0):
+
+- `path` is dotted, list positions are numbers (`machine.on_enable.0`). `set` replaces or creates a value, `delete`
+  removes it, `add` creates a new key (`conflict` if it exists), appends to a list, or inserts at a list position.
+- Values may use units like the file does (`"6000 mm/min"`).
+- All changes in one call are applied together and the **whole** configuration is validated, references included,
+  before anything is written. `validation_error` lists every problem as `data.errors: [{path, message}]`; an object
+  that fails its own validation is not reported again as a missing reference.
+- The file is edited in YAML round-trip mode (comments, key order and formatting of unchanged parts are kept) and
+  replaced atomically. The machine is then rebuilt from the new configuration.
+- Refused with `busy` while the machine is enabled (`dry_run` still works).
+- Objects that come from `include`d files can't be edited yet (`validation_error`).
+- Revisions and history are kept in memory: they start at 1 when the server starts. `config.undo` restores the file
+  byte for byte as it was at that revision and records a new revision.
+
 ## 12. Data: parts, packages, boards, jobs
 
 Collections: `parts`, `packages`, `boards`, `panels`, `jobs`. Uniform methods:

@@ -82,7 +82,9 @@ class MachineConfig:
     vision: dict = field(default_factory=dict)
     plugins: list[str] = field(default_factory=list)
     data: dict = field(default_factory=dict)          # plain-dict copy of the merged file content
+    included: dict[str, str] = field(default_factory=dict)   # "section.id" -> file, for objects from includes
     problems: list[ConfigProblem] = field(default_factory=list)
+    invalid: set[tuple[str, str]] = field(default_factory=set)   # (kind, id) of objects that failed validation
 
     @property
     def ok(self) -> bool:
@@ -126,22 +128,29 @@ def _validation_problems(prefix: str, exc: ValidationError) -> list[ConfigProble
 
 
 def load_config(path: str, reg: Registry | None = None, strict: bool = True) -> MachineConfig:
-    reg = reg or default_registry
-    cfg = MachineConfig(path=path)
-    problems = cfg.problems
-
     try:
         raw = _read_yaml(path)
     except Exception as exc:
-        problems.append(ConfigProblem("", f"cannot read {path}: {exc}"))
+        cfg = MachineConfig(path=path)
+        cfg.problems.append(ConfigProblem("", f"cannot read {path}: {exc}"))
         return _finish(cfg, strict)
-    data = _plain(raw) if raw is not None else {}
+    return build_config(_plain(raw) if raw is not None else {}, path, reg, strict)
+
+
+def build_config(data: Any, path: str | None, reg: Registry | None = None, strict: bool = True) -> MachineConfig:
+    """Validate configuration data (the plain content of the main file). Includes are resolved relative to `path`."""
+    import copy
+
+    reg = reg or default_registry
+    cfg = MachineConfig(path=path)
+    problems = cfg.problems
+    data = copy.deepcopy(data)
     if not isinstance(data, dict):
         problems.append(ConfigProblem("", "top level must be a mapping"))
         return _finish(cfg, strict)
 
     # includes: merge sections from extra files
-    base = os.path.dirname(os.path.abspath(path))
+    base = os.path.dirname(os.path.abspath(path)) if path else os.getcwd()
     for pattern in data.get("include", []) or []:
         for inc in sorted(glob.glob(os.path.join(base, pattern))):
             try:
@@ -159,6 +168,7 @@ def load_config(path: str, reg: Registry | None = None, strict: bool = True) -> 
                     if obj_id in target:
                         problems.append(ConfigProblem(f"{section}.{obj_id}", f"defined twice (also in {inc})"))
                     target[obj_id] = obj
+                    cfg.included[f"{section}.{obj_id}"] = inc
     cfg.data = data
 
     if data.get("format") != FORMAT:
@@ -200,6 +210,7 @@ def load_config(path: str, reg: Registry | None = None, strict: bool = True) -> 
             settings = info.model.model_validate(obj)
         except ValidationError as exc:
             problems.extend(_validation_problems(path_, exc))
+            cfg.invalid.add((kind, obj_id))
             return
         if any(o.kind == kind and o.id == obj_id for o in cfg.objects):
             problems.append(ConfigProblem(path_, f"{kind} id {obj_id!r} is used twice"))
@@ -233,7 +244,7 @@ def _check_references(cfg: MachineConfig) -> None:
             if not optional:
                 problems.append(ConfigProblem(path_, "missing reference"))
             return
-        if cfg.find(kind, ref) is None:
+        if cfg.find(kind, ref) is None and (kind, ref) not in cfg.invalid:   # invalid ones are reported already
             problems.append(ConfigProblem(path_, f"no {kind} with id {ref!r}"))
 
     for o in cfg.objects:

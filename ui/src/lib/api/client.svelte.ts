@@ -32,6 +32,8 @@ class TinkerClient {
 	objects = $state<string[]>([]);
 	status = $state<Status>({});
 	lastError = $state<string | null>(null);
+	/** bumped on every notify_config_changed; pages that show configuration re-load when it changes */
+	configRevision = $state(0);
 
 	#ws: WebSocket | null = null;
 	#nextId = 1;
@@ -100,7 +102,7 @@ class TinkerClient {
 		}
 	}
 
-	#handle(msg: { id?: number; result?: unknown; error?: { code: number; message: string; data?: object }; method?: string; params?: { status?: Status } }): void {
+	#handle(msg: { id?: number; result?: unknown; error?: { code: number; message: string; data?: object }; method?: string; params?: { status?: Status; revision?: number } }): void {
 		if (msg.id !== undefined && msg.id !== null) {
 			const p = this.#pending.get(msg.id);
 			if (!p) return;
@@ -112,6 +114,10 @@ class TinkerClient {
 		}
 		if (msg.method === 'notify_status_update' && msg.params?.status) {
 			this.#merge(msg.params.status);
+		} else if (msg.method === 'notify_config_changed') {
+			// the machine was rebuilt from the new configuration: objects may have changed, subscribe again
+			this.configRevision = msg.params?.revision ?? this.configRevision + 1;
+			this.#afterConnect().catch((e) => (this.lastError = String(e)));
 		}
 	}
 
