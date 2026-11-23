@@ -24,6 +24,7 @@ snapshots, device controls and a list of the video devices on the server.
 | `idle_close` | Close the device this long after the last viewer left; 0 = keep it open once opened | 10000 ms |
 | `jpeg_quality` | For streams and snapshots | 80 |
 | `stream_fps` | Default frame rate of MJPEG streams (a client can ask for less) | 15 |
+| `warmup` | Drop frames for this long after opening the device, while auto exposure and white balance settle (a snapshot from a just-opened USB camera was almost black on the bench) | 0; `v4l2`: 1500 ms |
 
 The transform is applied to every frame in this order: crop, rotate, flip. Vision (phase 6) will see the same
 image as the stream.
@@ -70,6 +71,8 @@ cameras:
 | `watchdog.reopen` | After a failure, close and reopen the device (e.g. after a USB reset) | true |
 | `watchdog.reopen_delay` | Wait before reopening | 1000 ms |
 
+After the watchdog reopened a camera, its "no frame" error is cleared as soon as frames arrive again.
+
 Notes:
 
 - USB cameras show up as two nodes (`video0`, `video1`): index 0 is the picture, index 1 metadata. Only index 0 is
@@ -80,6 +83,31 @@ Notes:
 - The format actually delivered (cameras round to what they support) is in the camera's status, `actual`.
 - Control names differ between kernels: newer ones say `focus_automatic_continuous` and `auto_exposure`, older ones
   `focus_auto` and `exposure_auto`. `camera.controls` lists the names this camera has.
+
+## Calibrating an up-looking camera
+
+Both work while the machine is enabled (calibration values are saved live), from the camera view on the Machine page
+or with `config.capture`:
+
+1. **Location:** centre a nozzle over the camera and bring it into focus (switch off "Raise Z before X/Y jogs" for
+   the fine X/Y steps), then **Set location from N1**. The position is read back from the controller, so Z is
+   where the axis really is.
+2. **mm per pixel:** with the nozzle still centred and in focus, **Measure mm/px with N1**. The nozzle moves 0.5 and
+   1 mm in X, then in Y, at the same height, and the image shift is measured by template matching. Shown before
+   saving: the values, the field of view, the image rotation against the machine axes and whether the image is
+   mirrored.
+
+How the measurement avoids the traps found on the bench (2026-11-23):
+
+- **Parallax:** the sharp nozzle tip moves more pixels per mm than the blurry nozzle body behind it, which is
+  further from the lens. Matching both gave results that depended on the distance moved. The images are therefore
+  high-pass filtered (only in-focus detail counts), the matched area is small (15 % of the image), and the image
+  must move twice as far for 1 mm as for 0.5 mm, or the measurement is refused.
+- **Backlash:** each axis comes at the start position from the direction it is then measured in (0.3 mm take-up),
+  so slack in the drive (~0.05 mm in X here) doesn't shorten the first step.
+- **Flat background:** windows without any detail are ignored (OpenCV scores them as perfect matches).
+
+Result on the MC5S3DP-XHAT: two runs per camera agreed within 0.6 % and 1.3 %, and X and Y within about 1 %.
 
 ## When the device is open
 

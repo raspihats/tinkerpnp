@@ -70,8 +70,10 @@ plugins: [pip package names]
 
 - The file is the source of truth. Edits through the API are validated, applied, and written back immediately,
   keeping comments and ordering (ruamel.yaml). Each edit is logged with undo.
-- Values that can't change while running (e.g. a driver's port) are marked in the schema; the API answers with
-  "applies after reconnect/restart".
+- Calibration values (camera locations and offsets, units per pixel, nozzle offsets, park and jog settings, feeder
+  pick locations, names and notes) can be edited while the machine is enabled and take effect at once. Everything
+  else (drivers, axes, types, ...) needs a disabled machine, because the machine is rebuilt from the file. See
+  `config.update` in [`api.md`](api.md).
 - Secrets (API keys, passwords) never go in this file.
 
 ## Relation to OpenPnP's machine.xml

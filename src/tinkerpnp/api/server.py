@@ -139,7 +139,15 @@ DEFAULT_UI_DIR = Path(__file__).resolve().parents[3] / "ui" / "build"   # repo c
 
 
 def create_app(machine: Machine, ui_dir: str | os.PathLike | None = None) -> FastAPI:
-    app = FastAPI(title="TinkerPnP API", version=__version__,
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
+        # shutting down: stop motion, close the serial port and the cameras
+        app.state.tinker.machine.close()
+
+    app = FastAPI(title="TinkerPnP API", version=__version__, lifespan=lifespan,
                   description="HTTP mirror of the JSON-RPC API; see docs/api.md. Subscriptions need the WebSocket.",
                   docs_url="/api/docs", openapi_url="/api/openapi.json")
     store = None
@@ -321,7 +329,11 @@ def create_app(machine: Machine, ui_dir: str | os.PathLike | None = None) -> Fas
         async def ui(path: str) -> FileResponse:
             target = (ui_root / path).resolve()
             if path and target.is_file() and ui_root.resolve() in target.parents:
-                return FileResponse(target)
-            return FileResponse(index)          # SPA: client-side routes (/objects, /config) get index.html
+                if path.startswith("_app/immutable/"):   # names contain a content hash: cache for good
+                    return FileResponse(target, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+                return FileResponse(target, headers={"Cache-Control": "no-cache"})
+            # SPA: client-side routes (/objects, /config) get index.html; always revalidated, so a new build is
+            # picked up on the next load
+            return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
     return app

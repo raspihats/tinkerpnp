@@ -1,7 +1,7 @@
 <script lang="ts">
 	import './layout.css';
 	import favicon from '#lib/assets/favicon.svg';
-	import { page } from '$app/state';
+	import { page, updated } from '$app/state';
 	import { onMount } from 'svelte';
 	import type { LayoutProps } from './$types';
 	import { tinker } from '#lib/api/client.svelte.js';
@@ -84,6 +84,13 @@
 			{#each tinker.info.warnings as w (w)}
 				<div>⚠ {w}</div>
 			{/each}
+		</div>
+	{/if}
+
+	{#if updated.current}
+		<div class="flex items-center gap-2 border-b bg-sky-50 px-4 py-1.5 text-sm text-sky-900 dark:bg-sky-950 dark:text-sky-100">
+			A new version of the web UI is on the server.
+			<Button size="sm" variant="outline" class="ml-auto h-7" onclick={() => location.reload()}>Reload</Button>
 		</div>
 	{/if}
 

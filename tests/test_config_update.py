@@ -115,7 +115,7 @@ def test_history_and_undo_restore_the_file(client, cfg_path):
 
 def test_refused_while_enabled(client):
     client.app_state.machine.state.update(enabled=True)
-    r = update(client, [{"op": "set", "path": "name", "value": "x"}])
+    r = update(client, [{"op": "set", "path": "drivers.sim.time_scale", "value": 0}])
     assert r.status_code == 409 and r.json()["error"]["data"]["name"] == "busy"
 
 
@@ -153,3 +153,32 @@ def test_invalid_object_is_not_also_reported_as_missing(client):
     r = update(client, [{"op": "set", "path": "axes.x.soft_limits", "value": "wide"}], dry_run=True)
     paths = [e["path"] for e in r.json()["error"]["data"]["errors"]]
     assert paths == ["axes.x.soft_limits"]
+
+
+def test_calibration_changes_while_enabled(client, cfg_path):
+    """Calibration values go in live (no rebuild, homing kept); structural changes still need a disabled machine."""
+    client.post("/api/machine/enable")
+    machine = client.app_state.machine
+    r = update(client, [{"op": "set", "path": "cameras.bottom.location", "value": {"x": 200, "y": 40, "z": 30}}])
+    assert r.status_code == 200, r.json()
+    assert client.app_state.machine is machine                     # same machine, still enabled and homed
+    assert machine.state.status()["enabled"] and machine.state.status()["homed"]
+    assert machine.get("camera", "bottom").status()["location"] == {"x": 200, "y": 40, "z": 30}
+    r = update(client, [{"op": "set", "path": "heads.H1.nozzles.N2.offset.x", "value": 33.0}])
+    assert r.status_code == 200
+    assert machine.get("nozzle", "N2").status()["location"]["x"] == pytest.approx(1 + 33.0)
+    r = update(client, [{"op": "set", "path": "axes.x.feed", "value": 100}])
+    assert r.status_code == 409 and r.json()["error"]["data"]["paths"] == ["axes.x.feed"]
+    r = client.post("/api/config/undo", json={"revision": 1})          # undoing calibration is live too
+    assert r.status_code == 200
+    assert machine.get("camera", "bottom").status()["location"]["x"] == 189.9
+
+
+def test_capture_location(client):
+    r = client.post("/api/config/capture", json={"field": "cameras.bottom.location", "from": "location",
+                                                  "args": {"object": "nozzle/N1"}})
+    assert r.status_code == 200, r.json()
+    assert r.json()["result"]["value"] == {"x": 0.0, "y": 0.0, "z": 57.0}
+    assert client.get("/api/config/capture_helpers").json()["result"][0]["name"] == "location"
+    r = client.post("/api/config/capture", json={"field": "x", "from": "magic", "args": {"object": "nozzle/N1"}})
+    assert r.status_code == 400

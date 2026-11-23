@@ -449,6 +449,8 @@ class CameraCommon(Settings):
                                                         "0 = keep it open once opened")
     jpeg_quality: int = Field(80, ge=10, le=100, description="For streams and snapshots")
     stream_fps: float = Field(15.0, gt=0, le=120, description="Default frame rate of MJPEG streams")
+    warmup: DurationMs = Field(0.0, description="Drop frames for this long after opening the device (auto "
+                                                "exposure and white balance settle)")
 
 
 OVERLAYS = ("crosshair", "scale", "grid", "info")
@@ -551,6 +553,7 @@ class CameraBase(MachineObject):
                 pass
             return
         frames, t_fps = 0, time.monotonic()
+        warm_until = time.monotonic() + self.settings.warmup / 1000.0
         try:
             while not self._stop.is_set():
                 with self._cond:   # decide and mark stopped under the lock, so acquire() starts a new thread
@@ -568,6 +571,8 @@ class CameraBase(MachineObject):
                     if self._stop.wait(0.05):
                         break
                     continue
+                if time.monotonic() < warm_until:
+                    continue                       # still settling after opening: nobody sees this frame
                 frame = self.apply_transform(frame)
                 with self._cond:
                     self._seq += 1

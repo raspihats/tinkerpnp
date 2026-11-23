@@ -23,6 +23,7 @@
 	let cameras = $state<CameraInfo[]>([]);
 	let viewCamera = $state<string | null>(null);
 	let distances = $state<number[]>([0.01, 0.1, 1, 10, 100]);
+	let liftDefault = $state(true);
 
 	// cameras and jog settings come from the server; reload when the configuration changes
 	$effect(() => {
@@ -34,8 +35,11 @@
 				viewCamera = (list.find((c) => c.head && c.looking === 'down') ?? list[0])?.id ?? null;
 			}
 		}).catch(() => {});
-		tinker.call<{ config: { distances?: number[] } }>('config.get', { path: 'machine.jog' })
-			.then((r) => { if (r.config?.distances?.length) distances = r.config.distances; })
+		tinker.call<{ config: { distances?: number[]; safe_z?: string } }>('config.get', { path: 'machine.jog' })
+			.then((r) => {
+				if (r.config?.distances?.length) distances = r.config.distances;
+				liftDefault = r.config?.safe_z !== 'never';
+			})
 			.catch(() => {});
 	});
 
@@ -112,7 +116,7 @@
 				<Card.CardContent class="px-3">
 					{#if viewCamera}
 						{#key viewCamera}
-							<CameraView id={viewCamera} headMounted={!!cameras.find((c) => c.id === viewCamera)?.head} />
+							<CameraView id={viewCamera} headMounted={!!cameras.find((c) => c.id === viewCamera)?.head} tool={(machine.selected_tool as string | null) ?? null} />
 						{/key}
 					{:else}
 						<p class="text-sm text-muted-foreground">No cameras configured.</p>
@@ -125,7 +129,7 @@
 				<Card.Card class="gap-2 py-3">
 					<Card.CardHeader class="px-3"><Card.CardTitle class="text-sm">Jog</Card.CardTitle></Card.CardHeader>
 					<Card.CardContent class="px-3">
-						<JogPanel {tools} {distances} />
+						<JogPanel {tools} {distances} {liftDefault} />
 					</Card.CardContent>
 				</Card.Card>
 

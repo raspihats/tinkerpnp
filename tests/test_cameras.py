@@ -50,7 +50,7 @@ def test_up_camera_sees_the_nozzle(m):
     cam = m.get("camera", "bottom")
     run(m, m.planner.move_to, m.get("nozzle", "N1"), {"x": 189.9, "y": 49.5, "z": 38.0})
     _, over = cam.snapshot()
-    assert over[240, 320].mean() > 200                                # the tip, in focus, in the middle
+    assert over[240, 320].mean() < 40 and over[240, 340].mean() > 180  # the dark bore in the middle, the bright tip
     run(m, m.planner.move_to, m.get("nozzle", "N1"), {"x": 50, "y": 49.5})
     _, away = cam.snapshot()
     assert away[240, 320].mean() < 30
@@ -184,3 +184,37 @@ def test_snapshot_stream_and_api(api):
 
     r = api.post("/api/camera/set_controls", json={"id": "top", "controls": {"gain": 1}})
     assert r.status_code == 400                                       # simulated cameras have no controls
+
+
+def test_warmup_drops_the_first_frames(m):
+    cam = m.get("camera", "top")
+    cam.settings.warmup = 400
+    t0 = time.monotonic()
+    cam.snapshot()
+    assert time.monotonic() - t0 >= 0.4
+
+
+def test_measure_units_per_pixel_with_the_nozzle(m):
+    """The simulated bottom camera draws at 0.02 mm/px: moving N1 over it must measure that."""
+    from tinkerpnp.core.calibration import measure_units_per_pixel
+    run(m, m.enable)
+    cam, n1 = m.get("camera", "bottom"), m.get("nozzle", "N1")
+    run(m, m.planner.move_to, n1, {"x": 189.9, "y": 49.5, "z": 38.0})
+    r = run(m, measure_units_per_pixel, m, cam, n1, 1.0, 0.15)
+    assert r["value"]["x"] == pytest.approx(0.02, rel=0.03) and r["value"]["y"] == pytest.approx(0.02, rel=0.03)
+    d = r["details"]
+    assert not d["mirrored_x"] and not d["mirrored_y"] and abs(d["rotation_deg"]) < 1
+    assert n1.compute_location()["x"] == pytest.approx(189.9)              # back where it started
+    cam.settings.transform = ImageTransform(flip_x=True)                     # a mirrored camera is reported
+    r = run(m, measure_units_per_pixel, m, cam, n1, 1.0, 0.15)
+    assert r["details"]["mirrored_x"] and not r["details"]["mirrored_y"]
+
+
+def test_units_per_pixel_through_the_api(api):
+    api.post("/api/machine/enable")
+    api.post("/api/motion/move_to", json={"object": "nozzle/N1", "location": {"x": 189.9, "y": 49.5, "z": 38.0}})
+    r = api.post("/api/config/capture", json={"field": "cameras.bottom.units_per_pixel", "from": "units_per_pixel",
+                                               "args": {"camera": "bottom", "object": "nozzle/N1", "distance": 0.5}})
+    assert r.status_code == 200, r.text
+    v = r.json()["result"]
+    assert v["value"]["x"] == pytest.approx(0.02, rel=0.05) and v["details"]["mirrored_x"] is False

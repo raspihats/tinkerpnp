@@ -83,6 +83,9 @@ PROFILES: dict[str, dict] = {
         "stop": ["!", "\x18"],                  # feed hold, then soft reset
         "after_stop": "alarm",                  # a reset during motion loses the position (ALARM:3)
         "position_poll": 250.0,
+        # read MPos back after every move (a status report, ~5 ms): Z moves in 0.225 mm steps, so 34.931 is really
+        # 34.878, and calibration needs the real value
+        "location_confirmation": True,
         "connect_wait": 200.0,
         # $H (home) answers with two "ok"s, 11 ms apart (seen on the MC5S3DP-XHAT, 2026-11-23): drop the second
         "settle": {"HOME_COMMAND": 100.0, "HOME_AXIS_COMMAND": 100.0},
@@ -171,7 +174,11 @@ class SerialTransport(Transport):
     def __init__(self, port: str, baud: int):
         import serial  # pyserial
         url = "socket://" + port[len("tcp://"):] if port.startswith("tcp://") else port
-        self.port = serial.serial_for_url(url, baudrate=baud, timeout=0.05, write_timeout=2.0)
+        if "://" in url:
+            self.port = serial.serial_for_url(url, baudrate=baud, timeout=0.05, write_timeout=2.0)
+        else:
+            # exclusive: a second program (or a second TinkerPnP) gets "busy" instead of sharing the line
+            self.port = serial.Serial(url, baudrate=baud, timeout=0.05, write_timeout=2.0, exclusive=True)
 
     def write(self, data: bytes) -> None:
         self.port.write(data)

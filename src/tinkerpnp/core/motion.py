@@ -197,7 +197,9 @@ class Motion:
         self.m.motion.update(last_move={"object": obj.name, "location": self.location(obj)})
         return self.location(obj)
 
-    def jog(self, obj: Any, delta: dict, speed: float = 1.0) -> dict:
+    def jog(self, obj: Any, delta: dict, speed: float = 1.0, safe_z: str | None = None) -> dict:
+        """Move relative to the current location. safe_z: auto (lift before X/Y travel), none (stay at this Z, e.g.
+        to centre a nozzle over a camera), or None = machine.jog.safe_z from the configuration."""
         if not isinstance(delta, dict) or not delta:
             raise MachineError("invalid_params", "delta must be an object with x, y, z and/or rotation")
         current = self.location(obj)
@@ -208,7 +210,8 @@ class Motion:
             if not isinstance(d, (int, float)) or isinstance(d, bool):
                 raise MachineError("invalid_params", f"{coord} must be a number")
             location[coord] = current[coord] + d
-        safe_z = "auto" if self.m.config.machine.jog.safe_z == "always" else "none"
+        if safe_z is None:
+            safe_z = "auto" if self.m.config.machine.jog.safe_z == "always" else "none"
         return self.move_to(obj, location, speed, safe_z)
 
     def move_to_safe_z(self, head: Any) -> None:

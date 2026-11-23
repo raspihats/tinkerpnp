@@ -6,7 +6,7 @@
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { ArrowUp, ArrowDown, ArrowLeft, ArrowRight, ChevronsUp, ChevronsDown, RotateCcw, RotateCw, LoaderCircle } from '@lucide/svelte';
 
-	let { tools, distances }: { tools: string[]; distances: number[] } = $props();
+	let { tools, distances, liftDefault = true }: { tools: string[]; distances: number[]; liftDefault?: boolean } = $props();
 
 	const ROTATIONS = [0.1, 1, 5, 15, 45, 90];
 	const SPEEDS = [0.1, 0.25, 0.5, 1];
@@ -14,6 +14,11 @@
 	let step = $state(1);
 	let rotStep = $state(5);
 	let speed = $state(0.5);
+	// raise all nozzles to safe Z before X/Y jogs; starts from machine.jog.safe_z and is not remembered on purpose
+	let lift = $state(true);
+	$effect(() => {
+		lift = liftDefault;
+	});
 	let target = $state<{ x: string; y: string; z: string; rotation: string }>({ x: '', y: '', z: '', rotation: '' });
 
 	$effect(() => {
@@ -28,7 +33,7 @@
 
 	function jog(delta: Record<string, number>) {
 		if (!tool || !ready || moving) return;        // one jog at a time: holding a key doesn't queue up moves
-		tinker.act('motion.jog', { object: tool, delta, speed });
+		tinker.act('motion.jog', { object: tool, delta, speed, safe_z: lift ? 'auto' : 'none' });
 	}
 
 	function moveTo() {
@@ -123,6 +128,16 @@
 		</div>
 	</div>
 
+	<label class="flex items-center gap-2 text-xs">
+		<input type="checkbox" bind:checked={lift} />
+		Raise Z before X/Y jogs
+		{#if !lift}
+			<span class="rounded bg-amber-100 px-1.5 py-0.5 text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+				off: X/Y jogs stay at this Z — watch for anything under the nozzles
+			</span>
+		{/if}
+	</label>
+
 	<form class="flex items-center gap-1" onsubmit={(e) => { e.preventDefault(); moveTo(); }}>
 		{#each ['x', 'y', 'z', 'rotation'] as const as k (k)}
 			<input
@@ -135,6 +150,7 @@
 		<Button type="submit" size="sm" disabled={!ready || moving}>Go</Button>
 	</form>
 	<p class="text-xs text-muted-foreground">
-		Arrows, Page Up/Down and , . jog (Shift: ×10). Empty fields keep their value. X/Y moves raise the nozzles to safe Z first.
+		Arrows, Page Up/Down and , . jog (Shift: ×10). Empty fields keep their value. Go, Park and click-to-move always
+		raise the nozzles to safe Z before X/Y travel.
 	</p>
 </div>

@@ -37,7 +37,9 @@ def main(argv: list[str] | None = None) -> int:
     from .core.machine import Machine
 
     app = create_app(Machine(cfg), ui_dir=args.ui)
-    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+    # open browser connections (camera streams, WebSockets) must not keep a stopping server alive: a second server
+    # started meanwhile would share the serial port with it
+    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level, timeout_graceful_shutdown=3)
     return 0
 
 

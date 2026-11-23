@@ -7,7 +7,7 @@ import socket
 from typing import TYPE_CHECKING, Any
 
 from .. import API_VERSION, __version__
-from ..core.config_edit import ConfigEditError
+from ..core.config_edit import ConfigEditError, is_live
 from ..core.machine import Machine
 from ..core.registry import KINDS
 from .jsonrpc import Dispatcher, RpcError
@@ -184,11 +184,14 @@ async def motion_move_to(ctx: "Connection", object: str, location: dict | None =
 
 
 @rpc.method("motion.jog")
-async def motion_jog(ctx: "Connection", object: str, delta: dict, speed: float = 1.0) -> dict:
-    """Move relative to the current location; applies machine.jog.safe_z."""
+async def motion_jog(ctx: "Connection", object: str, delta: dict, speed: float = 1.0,
+                     safe_z: str | None = None) -> dict:
+    """Move relative to the current location. safe_z: auto / none; default machine.jog.safe_z."""
+    if safe_z not in (None, "auto", "none"):
+        raise RpcError("invalid_params", "safe_z must be auto or none")
     planner = ctx.app_state.machine.planner
     obj = planner.resolve(object)
-    return {"location": await _run(ctx, planner.jog, obj, delta, speed)}
+    return {"location": await _run(ctx, planner.jog, obj, delta, speed, safe_z)}
 
 
 @rpc.method("motion.jog_cancel", immediate=True)
@@ -455,10 +458,25 @@ def _client_name(ctx: "Connection") -> str:
     return f"http {ctx.remote}" if ctx.remote else "http"
 
 
-def _apply_result(ctx: "Connection", result) -> dict:
-    """Rebuild the machine from the new configuration and tell every client."""
+def _check_enabled(ctx: "Connection", paths: list[str]) -> bool:
+    """True if the machine is enabled (changes then go in live). Refuses changes that need a disabled machine."""
+    if not ctx.app_state.machine.state.status().get("enabled"):
+        return False
+    not_live = [p for p in paths if not is_live(p)]
+    if not_live:
+        raise RpcError("busy", "disable the machine before changing " + ", ".join(not_live[:5])
+                       + " (only calibration values can change while it is enabled)", paths=not_live)
+    return True
+
+
+def _apply_result(ctx: "Connection", result, live: bool = False) -> dict:
+    """Rebuild the machine from the new configuration (or apply calibration values live) and tell every client."""
     app = ctx.app_state
-    if result.applied:
+    if result.applied and live:
+        app.machine.apply_live(result.config)
+        app.notify_all("notify_config_changed", {"revision": result.revision, "paths": result.paths,
+                                                 "client": _client_name(ctx), "live": True})
+    elif result.applied:
         app.replace_machine(Machine(result.config, app.machine.registry))
         app.notify_all("notify_config_changed", {"revision": result.revision, "paths": result.paths,
                                                  "client": _client_name(ctx)})
@@ -474,13 +492,13 @@ def _edit_error(exc: ConfigEditError) -> RpcError:
 def config_update(ctx: "Connection", changes: list, revision: int | None = None, dry_run: bool = False) -> dict:
     """Validate and apply changes ({op: set/delete/add, path, value}) to the machine configuration."""
     store = _store(ctx)
-    if not dry_run and ctx.app_state.machine.state.status().get("enabled"):
-        raise RpcError("busy", "disable the machine before changing its configuration")
+    paths = [c.get("path", "") if isinstance(c, dict) else "" for c in (changes if isinstance(changes, list) else [])]
+    live = False if dry_run else _check_enabled(ctx, [str(p) for p in paths])
     try:
         result = store.update(changes, revision, dry_run=dry_run, client=_client_name(ctx))
     except ConfigEditError as exc:
         raise _edit_error(exc) from None
-    return _apply_result(ctx, result)
+    return _apply_result(ctx, result, live)
 
 
 @rpc.method("config.history", read_only=True)
@@ -493,10 +511,60 @@ def config_history(ctx: "Connection", limit: int = 20) -> list:
 def config_undo(ctx: "Connection", revision: int) -> dict:
     """Return the configuration to how it was at `revision` (creates a new revision)."""
     store = _store(ctx)
-    if ctx.app_state.machine.state.status().get("enabled"):
-        raise RpcError("busy", "disable the machine before changing its configuration")
+    undone = store.changes_since(revision) if isinstance(revision, int) else []
+    live = _check_enabled(ctx, [c.get("path", "") for c in undone] or ["*"])
     try:
         result = store.undo(revision, client=_client_name(ctx))
     except ConfigEditError as exc:
         raise _edit_error(exc) from None
-    return _apply_result(ctx, result)
+    return _apply_result(ctx, result, live)
+
+
+@rpc.method("config.capture_helpers", read_only=True)
+def config_capture_helpers(ctx: "Connection") -> list:
+    """Helpers for config.capture."""
+    return [{"name": "location", "args": {"object": "nozzle/<id>, camera/<id> or axis/<id>"},
+             "description": "Where the object really is now (the position is read back from the controller): "
+                            "e.g. a bottom camera's location = the nozzle centred over it, in focus"},
+            {"name": "units_per_pixel", "args": {"camera": "camera id (up-looking, machine-mounted)",
+                                                 "object": "nozzle/<id>, in focus over the camera",
+                                                 "distance": "mm to move in X and Y (default 1)"},
+             "description": "Moves the nozzle by `distance` in X and in Y at the same height and measures how far "
+                            "the image moved (template matching). Returns mm per pixel, plus whether the image is "
+                            "mirrored or rotated. The nozzle ends where it started"}]
+
+
+@rpc.method("config.capture")
+async def config_capture(ctx: "Connection", field: str, args: dict, **kw: Any) -> dict:
+    """Compute a configuration value from the machine as it is now (see config.capture_helpers). Nothing is saved:
+    the client shows the value and saves it with config.update."""
+    helper = kw.pop("from", "location")
+    if kw:
+        raise RpcError("invalid_params", f"unknown parameter(s): {', '.join(kw)}")
+    if helper not in ("location", "units_per_pixel"):
+        raise RpcError("invalid_params", f"unknown helper {helper!r}; see config.capture_helpers")
+    machine = ctx.app_state.machine
+    obj = machine.planner.resolve(str((args or {}).get("object", "")))
+    if helper == "units_per_pixel":
+        from ..core.calibration import measure_units_per_pixel
+        from ..core.objects import Nozzle
+        if not isinstance(obj, Nozzle):
+            raise RpcError("invalid_params", "object must be a nozzle")
+        camera = machine.objects.get(f"camera/{(args or {}).get('camera')}")
+        if camera is None:
+            raise RpcError("not_found", f"no camera {args.get('camera')!r}", what="camera", id=args.get("camera"))
+        machine.planner.require_ready()
+        distance = float(args.get("distance", 1.0))
+        r = await _run(ctx, measure_units_per_pixel, machine, camera, obj, distance)
+        return {"field": field, "value": r["value"], "details": r["details"], "from": helper, "object": obj.name}
+
+    def read() -> dict:
+        for driver in machine.drivers():       # the true position, not the last target
+            read_position = getattr(driver, "read_position", None)
+            if read_position is not None and driver.status().get("connected"):
+                read_position()
+        return machine.planner.location(obj)
+
+    loc = await _run(ctx, read)
+    value = {k: round(v, 4) for k, v in loc.items() if k in ("x", "y", "z") and v is not None}
+    return {"field": field, "value": value, "from": helper, "object": obj.name}

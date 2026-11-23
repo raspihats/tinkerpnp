@@ -10,13 +10,15 @@ from tinkerpnp.api.server import create_app
 from tinkerpnp.core.config import load_config
 from tinkerpnp.core.machine import Machine
 
+from conftest import tmp_config
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SIMULATED = os.path.join(ROOT, "config", "examples", "simulated.yaml")
 
 
 @pytest.fixture
 def machine():
-    return Machine(load_config(SIMULATED))
+    return Machine(load_config(tmp_config(SIMULATED)))
 
 
 @pytest.fixture
@@ -125,3 +127,23 @@ def test_websocket_invalid_json(client):
         ws.send_text("{not json")
         msg = json.loads(ws.receive_text())
         assert msg["error"]["code"] == -32700
+
+
+def test_ui_cache_headers(tmp_path):
+    """index.html is always revalidated (a new build shows up on reload); hashed files are cached for good."""
+    from tinkerpnp.api.server import create_app
+    from tinkerpnp.core.config import load_config
+    from tinkerpnp.core.machine import Machine
+    from fastapi.testclient import TestClient
+    import os
+    (tmp_path / "_app" / "immutable").mkdir(parents=True)
+    (tmp_path / "index.html").write_text("<html></html>")
+    (tmp_path / "_app" / "immutable" / "app.abc123.js").write_text("x")
+    (tmp_path / "_app" / "version.json").write_text("{}")
+    cfg = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "examples",
+                       "simulated.yaml")
+    with TestClient(create_app(Machine(load_config(tmp_config(cfg))), ui_dir=tmp_path)) as c:
+        assert c.get("/").headers["cache-control"] == "no-cache"
+        assert c.get("/console").headers["cache-control"] == "no-cache"
+        assert "immutable" in c.get("/_app/immutable/app.abc123.js").headers["cache-control"]
+        assert c.get("/_app/version.json").headers["cache-control"] == "no-cache"

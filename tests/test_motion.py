@@ -16,11 +16,17 @@ SIMULATED = os.path.join(ROOT, "config", "examples", "simulated.yaml")
 
 
 def simulated(time_scale: float = 0.0, **machine_section) -> Machine:
+    """The simulated machine, with its config in a temporary file: servers built from it may write their config
+    (config.update), and must never write the example in the repo."""
+    import tempfile
     with open(SIMULATED) as fh:
         data = _plain(YAML(typ="rt").load(fh))
     data["drivers"]["sim"]["time_scale"] = time_scale
     data["machine"].update(machine_section)
-    return Machine(build_config(data, SIMULATED))
+    path = os.path.join(tempfile.mkdtemp(prefix="tinkerpnp-test-"), "machine.yaml")
+    with open(path, "w") as fh:
+        YAML().dump(data, fh)
+    return Machine(build_config(data, path))
 
 
 @pytest.fixture
@@ -110,6 +116,15 @@ def test_jog_and_head_camera(m):
     assert pos(m, "z") == 57                                            # head travel raised the nozzles
 
 
+def test_jog_without_lift_keeps_z(m):
+    run(m, m.enable)
+    run(m, m.planner.move_to, nozzle(m, "N1"), {"x": 189.9, "y": 49.5, "z": 38})   # down over the camera
+    loc = run(m, m.planner.jog, nozzle(m, "N1"), {"x": 0.1, "y": -0.1}, 1.0, "none")
+    assert loc["z"] == 38 and loc["x"] == pytest.approx(190.0) and loc["y"] == pytest.approx(49.4)
+    loc = run(m, m.planner.jog, nozzle(m, "N1"), {"x": 1})                         # default: lift first
+    assert loc["z"] == 57
+
+
 def test_disable_forgets_home(m):
     run(m, m.enable)
     run(m, m.actuate, "pump", "on")
@@ -196,7 +211,7 @@ def test_api_enable_move_check(api):
 
 def test_config_change_refused_while_enabled(api):
     api.post("/api/machine/enable")
-    r = api.post("/api/config/update", json={"changes": [{"op": "set", "path": "name", "value": "x"}]})
+    r = api.post("/api/config/update", json={"changes": [{"op": "set", "path": "axes.x.feed", "value": 10}]})
     assert r.json()["error"]["data"]["name"] == "busy"
 
 

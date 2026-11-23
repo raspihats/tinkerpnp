@@ -23,6 +23,22 @@ from .registry import Registry
 OPS = ("set", "delete", "add")
 _INDEX = re.compile(r"^\d+$")
 
+# Calibration values that can change while the machine is enabled: they're applied to the running machine without
+# rebuilding it (Machine.apply_live), so homing and positions are kept. Everything else needs a disabled machine.
+LIVE_PATHS = [re.compile(p) for p in (
+    r"^cameras\.[^.]+\.(location|units_per_pixel|transform|name|notes)(\..*)?$",
+    r"^heads\.[^.]+\.cameras\.[^.]+\.(offset|units_per_pixel|transform|name|notes)(\..*)?$",
+    r"^heads\.[^.]+\.nozzles\.[^.]+\.(offset|name|notes)(\..*)?$",
+    r"^machine\.(park|jog|discard_location)(\..*)?$",
+    r"^feeders\.[^.]+\.(pick_location|name|notes|part)(\..*)?$",
+    r"^(axes|actuators|drivers|nozzle_tips|heads)\.[^.]+\.(name|notes)$",
+    r"^name$",
+)]
+
+
+def is_live(path: str) -> bool:
+    return any(p.match(path) for p in LIVE_PATHS)
+
 
 class ConfigEditError(Exception):
     """name is an API error name (validation_error, conflict, not_found, invalid_params)."""
@@ -226,6 +242,10 @@ class ConfigStore:
         self.text = new_text
         self.config = candidate
         return EditResult(self.revision, True, candidate, paths)
+
+    def changes_since(self, revision: int) -> list[dict]:
+        """Every change made after `revision` (what an undo to it would take back)."""
+        return [c for h in self.history if h.revision > revision for c in h.changes]
 
     def history_list(self, limit: int = 20) -> list[dict]:
         out = [{"revision": h.revision, "time": h.time, "client": h.client, "summary": h.summary}

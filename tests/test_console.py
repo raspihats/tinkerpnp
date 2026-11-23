@@ -8,13 +8,15 @@ from tinkerpnp.api.server import create_app
 from tinkerpnp.core.config import load_config
 from tinkerpnp.core.machine import Machine
 
+from conftest import tmp_config
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GRBL = os.path.join(ROOT, "config", "examples", "simulated-grblhal.yaml")
 SIMULATED = os.path.join(ROOT, "config", "examples", "simulated.yaml")
 
 
 def instant(path):
-    cfg = load_config(path)
+    cfg = load_config(tmp_config(path))
     for o in cfg.objects:
         if o.kind == "driver" and o.type == "gcode":
             o.settings.port = "sim://grblhal"          # instant moves and homing
@@ -81,6 +83,6 @@ def test_history_and_notifications(api):
 def test_bad_requests(api):
     assert api.post("/api/gcode/send", json={"command": ""}).status_code == 400
     assert api.post("/api/gcode/send", json={"command": "$I", "driver": "nope"}).status_code == 404
-    with TestClient(create_app(Machine(load_config(SIMULATED)))) as c:
+    with TestClient(create_app(Machine(load_config(tmp_config(SIMULATED))))) as c:
         r = c.post("/api/gcode/send", json={"command": "$I"})
         assert r.status_code == 400 and "no G-code driver" in r.json()["error"]["message"]

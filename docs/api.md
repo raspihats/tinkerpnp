@@ -193,7 +193,7 @@ of the design). Methods return when the motion has **finished** (`wait: false` r
 | Method | Params | Result |
 |---|---|---|
 | `motion.move_to` | `object` (head-mountable or `axis/<id>`), `location` (or `position` for axes), `speed` (fraction 0–1 of max, default 1), `safe_z` (`auto` default, `none` to move directly), `wait` | `{"location": {...}}` final location |
-| `motion.jog` | `object`, `delta` (`{x,y,z,rotation}`), `speed` | final location. Applies `machine.jog.safe_z` (e.g. raise before X/Y) |
+| `motion.jog` | `object`, `delta` (`{x,y,z,rotation}`), `speed`, `safe_z` (`auto`: raise all nozzles before X/Y travel, `none`: stay at this Z, e.g. to centre a nozzle over a camera; default from `machine.jog.safe_z`) | final location |
 | `motion.jog_cancel` | – | `{}`. **Immediate** |
 | `motion.park` | `head` (default: the only head), `axes` (`xy`, `z`, `all`) | final location |
 | `motion.move_to_safe_z` | `head` | `{}` |
@@ -262,7 +262,7 @@ writes the file. Every successful change bumps `revision`.
 | `config.update` | | `revision` (expected), `changes`: list of `{op: set/delete/add, path, value}`, `dry_run` | `{"revision": n+1, "applied": bool, "restart_required": [paths], "warnings": [...]}` or `validation_error` / `conflict` |
 | `config.history` | yes | `limit` | `[{revision, time, client, summary}]` |
 | `config.undo` | | `revision` (to go back to) | like `config.update` |
-| `config.capture` | | `field` (e.g. `heads.H1.nozzles.N2.offset`), `from` (helper name, e.g. `nozzle_offset_from_camera`), `args` | `{"value": ...}`; computes a value from the current machine state for the UI to confirm and then `config.update`. Helpers are listed by `config.capture_helpers` |
+| `config.capture` | | `field` (the config path the value is meant for, e.g. `cameras.bottom.location`), `from` (helper name), `args` | `{"field", "value", "from", "object"}`: computes a value from the machine as it is now; nothing is saved. The client shows it and saves it with `config.update`. Helpers so far: `location` (`args: {object}`): where a nozzle, head camera or axis really is, read back from the controller, as `{x, y, z}`. Used for a bottom camera's location: centre a nozzle over it, in focus, and capture |
 | `config.capture_helpers` | yes | – | Available capture helpers with descriptions |
 
 `revision` gives optimistic locking: two front ends editing at once get a `conflict` instead of overwriting each
@@ -278,7 +278,12 @@ How `config.update` works (implemented in phase 0):
   that fails its own validation is not reported again as a missing reference.
 - The file is edited in YAML round-trip mode (comments, key order and formatting of unchanged parts are kept) and
   replaced atomically. The machine is then rebuilt from the new configuration.
-- Refused with `busy` while the machine is enabled (`dry_run` still works).
+- While the machine is enabled, only **calibration values** can change: camera `location` / `offset` /
+  `units_per_pixel` / `transform`, nozzle `offset`, `machine.park`, `machine.jog`, `machine.discard_location`, feeder
+  `pick_location` and `part`, and any `name` / `notes`. They are applied to the running machine without rebuilding
+  it, so it stays enabled and homed (`notify_config_changed` then has `live: true`). Anything else is refused with
+  `busy` (`data.paths` lists what needs a disabled machine); `dry_run` always works. `config.undo` follows the same
+  rule for the changes it takes back.
 - Objects that come from `include`d files can't be edited yet (`validation_error`).
 - Revisions and history are kept in memory: they start at 1 when the server starts. `config.undo` restores the file
   byte for byte as it was at that revision and records a new revision.

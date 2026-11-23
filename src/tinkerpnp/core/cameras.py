@@ -37,6 +37,7 @@ class SimulatedCameraSettings(CameraCommon):
         "auto", description="bed: the machine bed under a down-looking camera (grid, feeders); nozzles: nozzles "
                             "above an up-looking camera; test: a test pattern; auto: by `looking`")
     focus_depth: float = Field(3.0, gt=0, description="Up-looking: mm of Z from `location.z` before nozzles blur")
+    noise: float = Field(2.0, ge=0, le=50, description="Sensor noise (standard deviation, 0..255 scale); 0 = none")
 
 
 @registry.register("camera", "simulated", SimulatedCameraSettings, "Simulated camera",
@@ -59,7 +60,13 @@ class SimulatedCamera(CameraBase):
         scene = self.settings.scene
         if scene == "auto":
             scene = "bed" if self.settings.looking == "down" else "nozzles"
-        return {"bed": self._bed, "nozzles": self._nozzles, "test": self._test}[scene]()
+        img = {"bed": self._bed, "nozzles": self._nozzles, "test": self._test}[scene]()
+        if self.settings.noise:                     # sensor noise, like a real camera
+            import numpy as np
+            rng = self.__dict__.setdefault("_rng", np.random.default_rng(1))
+            noise = rng.normal(0, self.settings.noise, img.shape)
+            img = np.clip(img.astype(np.float32) + noise, 0, 255).astype(np.uint8)
+        return img
 
     def _px(self) -> tuple[float, float]:
         upp = self.settings.units_per_pixel
@@ -108,6 +115,32 @@ class SimulatedCamera(CameraBase):
                 cv2.fillPoly(img, [term.astype(np.int32)], (200, 200, 200))
         return img
 
+    def _nozzle_sprite(self, nozzle_id: str, ux: float) -> Any:
+        """What a nozzle looks like from below, drawn once per scale: a textured body (3 mm), the tip (1 mm) with a
+        dark bore, like the real ones. The texture matters: flat disks give vision nothing to lock onto."""
+        import cv2
+        import numpy as np
+        cache = self.__dict__.setdefault("_sprites", {})
+        key = (nozzle_id, round(ux, 6))
+        if key in cache:
+            return cache[key]
+        r_body = max(4, int(round(1.5 / ux)))
+        size = 2 * r_body + 3
+        c = size // 2
+        rng = np.random.default_rng(abs(hash(nozzle_id)) % 2**32)
+        sprite = np.zeros((size, size, 3), np.uint8)
+        alpha = np.zeros((size, size), np.uint8)
+        cv2.circle(alpha, (c, c), r_body, 255, -1)
+        texture = rng.integers(70, 170, (size, size), dtype=np.uint8)
+        texture = cv2.GaussianBlur(texture, (0, 0), max(1.0, 0.05 / ux))
+        sprite[:] = texture[..., None]
+        cv2.circle(sprite, (c, c), int(round(0.5 / ux)), (220, 230, 220), -1)      # tip
+        cv2.circle(sprite, (c, c), int(round(0.5 / ux)), (90, 90, 90), max(1, int(round(0.05 / ux))))
+        cv2.circle(sprite, (c, c), max(2, int(round(0.2 / ux))), (10, 10, 10), -1)  # bore
+        sprite = cv2.bitwise_and(sprite, sprite, mask=alpha)
+        cache[key] = (sprite, alpha)
+        return sprite, alpha
+
     def _nozzles(self) -> Any:
         import cv2
         import numpy as np
@@ -121,20 +154,26 @@ class SimulatedCamera(CameraBase):
                 continue
             loc = nozzle.compute_location()
             cx, cy = self._to_img(loc["x"], loc["y"], cam)
-            if not (-w < cx < 2 * w and -h < cy < 2 * h):
+            sprite, alpha = self._nozzle_sprite(nozzle.id, ux)
+            size = sprite.shape[0]
+            if not (-size < cx < w + size and -size < cy < h + size):
                 continue
-            layer = np.zeros_like(img)
-            cv2.circle(layer, (cx, cy), int(1.5 / ux), (120, 120, 120), -1)      # nozzle body, 3 mm
-            cv2.circle(layer, (cx, cy), int(0.5 / ux), (230, 230, 230), -1)      # tip, 1 mm
-            angle = math.radians(loc.get("rotation") or 0)                       # a mark showing rotation
-            mx, my = cx + int(1.2 / ux * math.cos(angle)), cy - int(1.2 / uy * math.sin(angle))
-            cv2.circle(layer, (mx, my), max(2, int(0.2 / ux)), (0, 0, 200), -1)
+            angle = loc.get("rotation") or 0
+            m = cv2.getRotationMatrix2D((size / 2, size / 2), angle, 1.0)
+            m[0, 2] += cx - size / 2
+            m[1, 2] += cy - size / 2
+            layer = cv2.warpAffine(sprite, m, (w, h))
+            mask = cv2.warpAffine(alpha, m, (w, h))
+            mx, my = cx + int(1.2 / ux * math.cos(math.radians(angle))), cy - int(1.2 / uy * math.sin(math.radians(angle)))
+            cv2.circle(layer, (mx, my), max(2, int(0.2 / ux)), (0, 0, 200), -1)      # mark showing rotation
             if focus_z is not None and loc.get("z") is not None:
                 blur = abs(loc["z"] - focus_z) / self.settings.focus_depth
                 k = int(min(51, blur * 4)) * 2 + 1
                 if k > 1:
                     layer = cv2.GaussianBlur(layer, (k, k), 0)
-            img = cv2.max(img, layer)
+                    mask = cv2.GaussianBlur(mask, (k, k), 0)
+            a = (mask.astype(np.float32) / 255.0)[..., None]
+            img = (img * (1 - a) + layer * a).astype(np.uint8)
         return img
 
     def _test(self) -> Any:
@@ -182,6 +221,8 @@ class V4l2CameraSettings(CameraCommon):
                                      description="V4L2 controls set after opening, e.g. {focus_automatic_continuous: "
                                                  "false, focus_absolute: 250} (names as v4l2-ctl --list-ctrls)")
     buffer_size: int = Field(1, ge=1, le=10, description="Driver frame buffers; 1 = always the newest frame")
+    warmup: DurationMs = Field(1500.0, description="Drop frames for this long after opening the device (USB "
+                                                   "cameras start dark until auto exposure settles)")
     watchdog: Watchdog = Field(default_factory=Watchdog)
 
 
@@ -313,6 +354,8 @@ class V4l2Camera(CameraBase):
         now = time.monotonic()
         if ok and frame is not None:
             self._last_frame = now
+            if str(self._status.get("last_error") or "").startswith("no frame"):
+                self.update(last_error=None)          # recovered after the watchdog
             return frame
         if not self._path.startswith(DEV):          # a video file ended: start over (tests, demos)
             import cv2

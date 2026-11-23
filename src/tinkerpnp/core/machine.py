@@ -78,8 +78,13 @@ class Machine:
         self._lock = threading.Lock()
 
     def close(self) -> None:
-        """Stop motion, close driver links and the worker thread (machine replaced or server stopping)."""
-        self.stop("shutting down")
+        """Close driver links, cameras and the worker thread (machine replaced or server stopping). Motion is stopped
+        only if something is moving: the stop sequence (e.g. grbl's soft reset) shouldn't hit an idle machine."""
+        if self.motion.status().get("moving") or self._queued:
+            self.stop("shutting down")
+        else:
+            self._stop_generation += 1
+            self.stop_event.set()            # end any wait
         self.worker.shutdown(wait=False, cancel_futures=True)
         for camera in self.of_kind("camera"):
             try:
@@ -341,6 +346,22 @@ class Machine:
             if homed is not None:
                 fields["homed"] = homed
             self.get("axis", axis_id).update(**fields)
+        self._refresh_dependents()
+
+    def apply_live(self, config: MachineConfig) -> None:
+        """Take calibration changes (config_edit.LIVE_PATHS) into the running machine without rebuilding it."""
+        self.config = config
+        for oc in config.objects:
+            obj = self.objects.get(f"{oc.kind}/{oc.id}")
+            if obj is not None and obj.type == oc.type:
+                obj.settings = oc.settings
+        for cam in self.of_kind("camera"):
+            s = cam.settings
+            cam.update(location=cam.compute_location(),
+                       units_per_pixel=s.units_per_pixel.model_dump() if s.units_per_pixel else None)
+        for feeder in self.of_kind("feeder"):
+            pick = getattr(feeder.settings, "pick_location", None)
+            feeder.update(pick_location=pick.as_dict() if pick else None, part=getattr(feeder.settings, "part", None))
         self._refresh_dependents()
 
     def _refresh_dependents(self) -> None:

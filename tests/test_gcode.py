@@ -12,6 +12,8 @@ from tinkerpnp.core.gcode import compress, java_regex, render, strip_comments
 from tinkerpnp.core.machine import Machine
 from tinkerpnp.sim.grblhal import FakeGrblHAL
 
+from conftest import tmp_config
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXAMPLE = os.path.join(ROOT, "config", "examples", "simulated-grblhal.yaml")
 
@@ -25,7 +27,7 @@ def config_data(port="sim://grblhal", **driver):
 
 def make(port="sim://grblhal", data=None, **driver) -> Machine:
     data = data or config_data(port, **driver)
-    return Machine(build_config(data, EXAMPLE))
+    return Machine(build_config(data, tmp_config(EXAMPLE)))
 
 
 @pytest.fixture
@@ -289,3 +291,28 @@ def test_actuator_without_a_command_refuses(m):
         assert machine.get("actuator", "pump").status()["value"] is False      # still off, as it really is
     finally:
         machine.close()
+
+
+def test_serial_port_is_opened_exclusively():
+    """Two servers on one serial port split the replies between them (seen on the bench): the second must fail."""
+    import tty
+    master, slave = pty.openpty()
+    tty.setraw(slave)
+    from tinkerpnp.core.gcode import SerialTransport
+    first = SerialTransport(os.ttyname(slave), 115200)
+    try:
+        with pytest.raises(Exception) as e:
+            SerialTransport(os.ttyname(slave), 115200)
+        assert "lock" in str(e.value).lower() or "busy" in str(e.value).lower() or "resource" in str(e.value).lower()
+    finally:
+        first.close()
+        os.close(master)
+
+
+def test_closing_an_idle_machine_sends_no_stop_sequence(m):
+    """Stopping the server must not soft-reset an idle controller."""
+    run(m, m.enable)
+    lines = []
+    m.add_gcode_listener(lambda drv, direction, line: lines.append(line))
+    m.close()
+    assert "\x18" not in lines and "!" not in lines

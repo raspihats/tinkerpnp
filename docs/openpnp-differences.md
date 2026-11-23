@@ -18,7 +18,7 @@ Status: as of phase 1, step 5 (motion core, `gcode` driver, console, cameras, Ma
 |---|---|---|---|
 | Park location | Where the head's **default camera** goes | Where the **head** goes (head X/Y, no offset) | Parking at 0,0 pushed the head past its soft limits on the first machine |
 | Safe Z on moves | Done by the caller (e.g. "move to location at safe Z"); a plain move doesn't lift | Every `move_to` with X/Y travel lifts first, unless `safe_z: none` | Safe by default; API clients can't forget it |
-| Unsafe Z roaming | X/Y moves below safe Z allowed within `unsafe-Z-roaming-distance` | Not supported: always lift before X/Y travel | Simpler and safer; may be added |
+| Unsafe Z roaming | X/Y moves below safe Z allowed within `unsafe-Z-roaming-distance` | No distance rule. Moves always lift before X/Y travel; jogs can be told not to (`motion.jog` `safe_z: none`, the "Raise Z before X/Y jogs" switch in the UI, off only until the page is reloaded) | Centring a nozzle over the camera needs small X/Y jogs at camera height |
 | Dynamic safe Z | Per nozzle (`enable-dynamic-safe-z`): safe Z accounts for the part height | Not yet | Comes with parts/jobs (phase 5) |
 | Soft-limit check | Per motion command | All targets of a whole move (lift, travel, lower) are checked **before** anything moves | A refused move never half-runs |
 | Rotation limit | `limit-rotation`: angles are normalized into ±180° | Same: `limit_rotation: [-180, 180]` takes angles into the range by whole turns (200° → −160°); a range narrower than one turn is a hard limit | – |
@@ -42,6 +42,9 @@ Status: as of phase 1, step 5 (motion core, `gcode` driver, console, cameras, Ma
 | Actuator state after a stop or alarm | Kept as last set (*not verified*) | **Unknown** (shown amber) until set again: grbl's reset switches the spindle output off | The UI must not show a pump as on when it is off |
 | Stop key | – (*not verified*) | **Esc** on every page while enabled, plus a STOP button in the header | Safety |
 | Click to move | Camera view: click moves the camera there | Same, for head-mounted down-looking cameras with `units_per_pixel` | – |
+| Capturing positions | "Capture" buttons write the current position into a setting | `config.capture` returns the real position (read back from the controller) for the client to confirm and save; the camera view has "Set location from N1" and "Move N1 here" for up-looking cameras | Same idea; the value is shown before it's saved |
+| Measuring units per pixel | Camera wizard: measure an object of known size in the image | The nozzle is the ruler: it moves a known distance over the camera and the image shift is measured; also reports rotation and mirroring. Up-looking cameras only so far | No calibration part needed; uses the machine's own accuracy |
+| Editing while enabled | Most settings can be changed any time | Only calibration values while enabled (applied live); structural changes need a disabled machine | The machine is rebuilt from the file for structural changes |
 | Several clients | One GUI | Any number of API clients; requests run in order on one motion thread | API-first |
 | Errors | Java exceptions shown in dialogs | Named API errors (`not_homed`, `soft_limit`, `stopped`, ...) with data | Front ends switch on names |
 | Configuration file | `machine.xml` (Simple XML), edited through the GUI | `machine.yaml`, edited through the API (validated, comments kept) or by hand | See `docs/config.md` |
