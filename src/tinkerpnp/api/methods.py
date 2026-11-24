@@ -534,6 +534,39 @@ def job_plan(ctx: "Connection") -> list:
     return _runner(ctx).plan()
 
 
+@rpc.method("job.check_fiducials")
+async def job_check_fiducials(ctx: "Connection", job_id: str, board_index: int = 0, save: bool = False) -> dict:
+    """Measure a job board's fiducials with the head camera and fit its real location (save: store it in the job)."""
+    from ..core.jobs import measure_board
+    data = ctx.app_state.data
+    job = data.get("jobs", job_id)
+    if not 0 <= board_index < len(job.get("boards", [])):
+        raise RpcError("invalid_params", f"job {job_id} has no board {board_index}")
+    ctx.app_state.machine.planner.require_ready()
+    fit = await _run(ctx, measure_board, ctx.app_state.machine, data, job, board_index)
+    if save:
+        boards = job["boards"]
+        boards[board_index]["location"] = {"x": fit["x"], "y": fit["y"], "z": fit["z"], "rotation": fit["rotation"]}
+        out = data.update("jobs", job_id, {"boards": boards})
+        ctx.app_state.notify_all("notify_data_changed", {"collection": "jobs", "id": job_id,
+                                                         "revision": out["revision"], "change": "updated"})
+    return fit
+
+
+@rpc.method("vision.locate_fiducial")
+async def vision_locate_fiducial(ctx: "Connection", x: float, y: float, diameter: float = 1.0,
+                                 camera: str | None = None) -> dict:
+    """Find the round fiducial nearest to X/Y with the head camera; returns its machine location."""
+    from ..core.jobs import head_camera
+    from ..core.vision import locate_fiducial
+    machine = ctx.app_state.machine
+    cam = machine.objects.get(f"camera/{camera}") if camera else head_camera(machine)
+    if cam is None:
+        raise RpcError("not_found", f"no camera {camera!r}", what="camera", id=camera)
+    machine.planner.require_ready()
+    return await _run(ctx, locate_fiducial, machine, cam, {"x": x, "y": y}, diameter)
+
+
 @rpc.method("job.reset")
 def job_reset(ctx: "Connection", job_id: str) -> dict:
     """Mark every placement of a job as not placed (for the next board)."""

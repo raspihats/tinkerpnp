@@ -37,6 +37,9 @@ class SimulatedCameraSettings(CameraCommon):
         "auto", description="bed: the machine bed under a down-looking camera (grid, feeders); nozzles: nozzles "
                             "above an up-looking camera; test: a test pattern; auto: by `looking`")
     focus_depth: float = Field(3.0, gt=0, description="Up-looking: mm of Z from `location.z` before nozzles blur")
+    sim_fiducials: list[dict] = Field(default_factory=list,
+                                      description="Down-looking: round copper marks drawn on the bed, "
+                                                  "[{x, y, diameter}] in machine mm (to test fiducial vision)")
     noise: float = Field(2.0, ge=0, le=50, description="Sensor noise (standard deviation, 0..255 scale); 0 = none")
 
 
@@ -102,6 +105,10 @@ class SimulatedCamera(CameraBase):
                 px, py = self._to_img(gx, gy, cam)
                 cv2.putText(img, f"{gx},{gy}", (px + 3, py - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (160, 210, 160), 1,
                             cv2.LINE_AA)
+        for fid in self.settings.sim_fiducials:                  # copper fiducials
+            fx, fy = self._to_img(float(fid["x"]), float(fid["y"]), cam)
+            r = max(1, int(round(float(fid.get("diameter", 1.0)) / 2 / ux)))
+            cv2.circle(img, (fx, fy), r, (80, 170, 215), -1, cv2.LINE_AA)
         for feeder in self.machine.of_kind("feeder"):           # a 0805 part (2 x 1.25 mm) at every pick location
             loc = feeder.status().get("pick_location") or {}
             if "x" not in loc or "y" not in loc:

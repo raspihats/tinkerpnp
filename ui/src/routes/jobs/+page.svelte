@@ -11,7 +11,7 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Switch } from '#lib/components/ui/switch/index.js';
 	import { Label } from '#lib/components/ui/label/index.js';
-	import { Play, Pause, StepForward, Square, SkipForward, RotateCcw, Upload, Plus, Trash2, Crosshair, ListChecks, Save, FlaskConical, Check } from '@lucide/svelte';
+	import { Play, Pause, StepForward, Square, SkipForward, RotateCcw, Upload, Plus, Trash2, Crosshair, ListChecks, Save, FlaskConical, Check, ScanSearch, LoaderCircle } from '@lucide/svelte';
 
 	type JobBoard = { board: string; location: { x: number; y: number; z: number; rotation: number }; side: string; enabled: boolean; check_fiducials: boolean; placed: string[] };
 	type Job = { id: string; name?: string; boards: JobBoard[]; revision: number };
@@ -118,6 +118,23 @@
 		}
 	}
 	const run = (method: string, params: Record<string, unknown> = {}) => tinker.act(method, params);
+
+	let checking = $state<number | null>(null);
+	async function checkFiducials(i: number) {
+		if (!draft || dirty) return tinker.notify('warn', 'Save the job first');
+		checking = i;
+		const fit = await tinker.act<{ x: number; y: number; rotation: number; error_mm: number; fiducials: { id: string; off: number }[] }>(
+			'job.check_fiducials',
+			{ job_id: draft.id, board_index: i, save: true },
+			180000
+		);
+		checking = null;
+		if (fit) {
+			tinker.notify('ok', `Board ${i + 1}: X ${fit.x.toFixed(3)} Y ${fit.y.toFixed(3)} R ${fit.rotation.toFixed(3)}° (fit error ${fit.error_mm} mm; ` +
+				fit.fiducials.map((f) => `${f.id} off ${f.off} mm`).join(', ') + ')');
+			await reload();
+		}
+	}
 </script>
 
 <div class="grid items-start gap-4 lg:grid-cols-[16rem_minmax(0,1fr)]">
@@ -232,6 +249,7 @@
 									<Table.Head>Rotation</Table.Head>
 									<Table.Head>Side</Table.Head>
 									<Table.Head>On</Table.Head>
+									<Table.Head title="Measure the board's fiducials before placing">Fiducials</Table.Head>
 									<Table.Head>Placed</Table.Head>
 									<Table.Head></Table.Head>
 								</Table.Row>
@@ -252,9 +270,13 @@
 											</ToggleGroup.Root>
 										</Table.Cell>
 										<Table.Cell><Switch bind:checked={b.enabled} onCheckedChange={() => (dirty = true)} /></Table.Cell>
+										<Table.Cell><Switch bind:checked={b.check_fiducials} onCheckedChange={() => (dirty = true)} /></Table.Cell>
 										<Table.Cell class="num text-xs">{b.placed.length}</Table.Cell>
 										<Table.Cell class="text-right">
 											<Button variant="ghost" size="icon-sm" title="Board origin = where the top camera is now" onclick={() => fromCamera(i)}><Crosshair /></Button>
+											<Button variant="ghost" size="icon-sm" title="Measure the fiducials now and correct the board's location" disabled={checking !== null} onclick={() => checkFiducials(i)}>
+												{#if checking === i}<LoaderCircle class="animate-spin" />{:else}<ScanSearch />{/if}
+											</Button>
 											<Button variant="ghost" size="icon-sm" title="Remove from the job" onclick={() => { draft!.boards.splice(i, 1); dirty = true; }}><Trash2 /></Button>
 										</Table.Cell>
 									</Table.Row>
@@ -263,7 +285,9 @@
 						</Table.Root>
 						<p class="mt-2 text-xs text-muted-foreground">
 							X/Y: where the board's origin is on the machine (put the top camera's crosshair on it and press <Crosshair class="inline size-3" />);
-							Z: the board's top surface; rotation: the board's angle on the machine.
+							Z: the board's top surface; rotation: the board's angle on the machine. With Fiducials on, the job measures the
+							board's fiducials (2 or more, round) with the top camera before its first placement and corrects X, Y and rotation;
+							<ScanSearch class="inline size-3" /> does that now and saves the result.
 						</p>
 					{:else}
 						<p class="text-sm text-muted-foreground">Add a board (import one from KiCad in the Library).</p>

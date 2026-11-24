@@ -377,6 +377,13 @@ mark everything not placed). On an error (e.g. a feeder is empty) the job pauses
 | `vision.calibrate_nozzle_tip` | `nozzle`, `camera` | Calibration result (runout model) |
 | `vision.locate_fiducials` | `job_id`, `board` | Board location in the machine frame, with residuals |
 
+Implemented (2026-11-24): `vision.locate_fiducial` (`x`, `y`, `diameter` = 1, `camera` = the head's down camera;
+returns `{x, y, diameter, passes}`: the mark's machine location, after moving onto it until within 0.03 mm) and
+`job.check_fiducials` (`job_id`, `board_index`, `save`; returns the fitted `{x, y, rotation, z, scale, error_mm,
+fiducials}` and with `save` stores it as the board's location). A job board with `check_fiducials` is measured
+before its first placement. Cameras wait `settle` ms after a move before vision takes a picture. Pipelines and
+stages: `src/tinkerpnp/core/vision.py`.
+
 ## 17. G-code console and raw driver access
 
 | Method | Params | Result |

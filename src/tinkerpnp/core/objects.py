@@ -452,6 +452,8 @@ class CameraCommon(Settings):
     stream_fps: float = Field(15.0, gt=0, le=120, description="Default frame rate of MJPEG streams")
     warmup: DurationMs = Field(0.0, description="Drop frames for this long after opening the device (auto "
                                                 "exposure and white balance settle)")
+    settle: DurationMs = Field(300.0, description="Vision waits this long after a move before taking a picture "
+                                                  "(the machine stops shaking)")
 
 
 OVERLAYS = ("crosshair", "scale", "grid", "info")

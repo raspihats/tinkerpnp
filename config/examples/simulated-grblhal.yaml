@@ -69,6 +69,10 @@ heads:
         axes: {z: z_top_camera, rotation: rot_top_camera}
         offset: {x: 21.9, y: 20.0}
         units_per_pixel: {x: 0.04, y: 0.04}
+        # the demo board's fiducials as if the board lay at 150.6 / 120.4, turned 0.3 degrees (job: 150 / 120)
+        sim_fiducials:
+          - {x: 152.59, y: 122.41, diameter: 1.0}
+          - {x: 195.468, y: 145.635, diameter: 1.0}
     actuators: [pump, valve1, valve2]
 
 nozzle_tips:

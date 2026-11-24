@@ -20,6 +20,7 @@ from typing import Any
 
 from .errors import MachineError, Stopped
 from .pnp import pick, place
+from .vision import fit_board, locate_fiducial
 
 log = logging.getLogger("tinkerpnp.job")
 
@@ -55,6 +56,8 @@ class JobRunner:
     _step_once: bool = False
     started: float = 0.0
     dry_run: bool = False
+    data: Any = None
+    checked: dict[int, dict] = field(default_factory=dict)    # board index -> fiducial fit
 
     # ── planning ───────────────────────────────────────────────────────────────────────────────────────────────
     @classmethod
@@ -77,7 +80,7 @@ class JobRunner:
                     continue
                 steps.append(Step(bi, board["id"], p["id"], p.get("part"),
                                   board_to_machine(jb.get("location", {}), p.get("location", {}))))
-        runner = cls(machine, job, steps)
+        runner = cls(machine, job, steps, data=data)
         for msg in problems:
             runner.event("warning", message=msg)
         missing = sorted({s.part or "(no part)" for s in steps if not runner.feeder_for(s.part, check_empty=False)})
@@ -215,6 +218,9 @@ class JobRunner:
             raise MachineError("feeder_error", f"no feeder with parts for {step.part} ({step.placement})",
                                part=step.part)
         part = machine.state_store.find("parts", step.part) if hasattr(machine.state_store, "find") else None
+        jb = self.job["boards"][step.board_index]
+        if jb.get("check_fiducials") and step.board_index not in self.checked:
+            self.check_board(step.board_index)
         if self.dry_run:
             planner = machine.planner
             loc = feeder.pick_location()
@@ -233,6 +239,19 @@ class JobRunner:
         place(machine, nozzle, step.location, part)
         self._record(step)
 
+    # ── fiducials ──────────────────────────────────────────────────────────────────────────────────────────────
+    def check_board(self, board_index: int, max_error: float = 0.3) -> dict:
+        """On the motion thread: measure the board's fiducials, fit its real location, re-plan its placements."""
+        fit = measure_board(self.machine, self.data, self.job, board_index, max_error)
+        self.checked[board_index] = fit
+        board = self.data.get("boards", self.job["boards"][board_index]["board"])
+        by_id = {p["id"]: p for p in board.get("placements", [])}
+        for s in self.steps:
+            if s.board_index == board_index:
+                s.location = board_to_machine(fit, by_id[s.placement].get("location", {}))
+        self.event("fiducials", board_index=board_index, board=board["id"], fit=fit)
+        return fit
+
     def _record(self, step: Step) -> None:
         store = self.machine.state_store
         if not hasattr(store, "get"):
@@ -246,3 +265,46 @@ class JobRunner:
         self.job = updated
         self.machine.emit("notify_data_changed", {"collection": "jobs", "id": self.job["id"],
                                                   "revision": updated["revision"], "change": "updated"})
+
+
+def head_camera(machine: Any) -> Any:
+    for cam in machine.of_kind("camera"):
+        if cam.head is not None and cam.settings.looking == "down":
+            return cam
+    raise MachineError("invalid_params", "fiducials need a head-mounted, down-looking camera")
+
+
+def measure_board(machine: Any, data: Any, job: dict, board_index: int, max_error: float = 0.3) -> dict:
+    """Locate a job board's fiducials and fit its real location (x, y, rotation; z kept). On the motion thread."""
+    jb = job["boards"][board_index]
+    board = data.get("boards", jb["board"])
+    fids = [p for p in board.get("placements", []) if p.get("type") == "fiducial" and p.get("enabled", True)]
+    if len(fids) < 2:
+        raise MachineError("vision_failed", f"board {board['id']} has {len(fids)} fiducial(s), needs 2 or more")
+    camera = head_camera(machine)
+    location = jb.get("location", {})
+    board_pts, machine_pts, found = [], [], []
+    for f in fids:
+        expected = board_to_machine(location, f.get("location", {}))
+        diameter = _fiducial_diameter(data, f)
+        got = locate_fiducial(machine, camera, expected, diameter)
+        board_pts.append((f["location"].get("x", 0.0), f["location"].get("y", 0.0)))
+        machine_pts.append((got["x"], got["y"]))
+        found.append({"id": f["id"], **got,
+                      "off": round(math.hypot(got["x"] - expected["x"], got["y"] - expected["y"]), 4)})
+    fit = fit_board(board_pts, machine_pts)
+    if fit["error_mm"] > max_error or abs(fit["scale"] - 1) > 0.01:
+        raise MachineError("vision_failed", f"fiducials don't fit the board (error {fit['error_mm']} mm, scale "
+                                            f"{fit['scale']}): wrong fiducial or board?", result={"found": found})
+    fit["z"] = location.get("z", 0.0)
+    fit["fiducials"] = found
+    return fit
+
+
+def _fiducial_diameter(data: Any, placement: dict) -> float:
+    part = data.find("parts", placement.get("part")) if placement.get("part") else None
+    package = data.find("packages", part.get("package")) if part and part.get("package") else None
+    pads = (package or {}).get("footprint", {}).get("pads", [])
+    if pads and pads[0].get("width"):
+        return float(pads[0]["width"])
+    return 1.0

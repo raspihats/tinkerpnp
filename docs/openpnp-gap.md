@@ -64,8 +64,8 @@ measurement of units per pixel; web UI dashboard. Differences in behaviour: `ope
 
 | OpenPnP | TinkerPnP |
 |---|---|
-| Board location in the machine (manual: capture two placements or a corner) | *partly*: location + rotation per board, origin from the top camera; two-point capture: D2 |
-| Fiducial check (2 or 3 fiducials, board rotation and scale, per board) | step D2 (needs E1) |
+| Board location in the machine (manual: capture two placements or a corner) | *partly*: location + rotation per board, origin from the top camera, or measured from fiducials |
+| Fiducial check (2 or 3 fiducials, board rotation and scale, per board) | **done**: 2+ round fiducials, rotation + translation fit (least squares, scale and error checked), per board in the job or on request |
 | Job processor: plan, feed, pick, (align), place, per placement, with several nozzles | **done** for one nozzle at a time (several nozzles: D3) |
 | Start / pause / step / stop, skip placement, mark placed / not placed, resume after a stop | **done** (+ dry run) |
 | Error handling: retry pick, skip, pause on error, feeder empty | **done** (pause with the reason, resume retries) |
@@ -78,12 +78,12 @@ measurement of units per pixel; web UI dashboard. Differences in behaviour: `ope
 
 | OpenPnP | TinkerPnP |
 |---|---|
-| Pipeline engine (stages: image read, filters, threshold, contours, Hough circles, template match, ...) and editor | step E1 (engine + basic stages), editor E5 |
-| Fiducial locator (round fiducials, by footprint), visual homing (homing fiducial) | step E1 |
+| Pipeline engine (stages: image read, filters, threshold, contours, Hough circles, template match, ...) and editor | *partly*: engine with gray, blur, threshold, morph, circles, blobs, nearest (sizes in mm); more stages and the editor: E5 |
+| Fiducial locator (round fiducials, by footprint), visual homing (homing fiducial) | *partly*: round fiducials (diameter from the fiducial's package pad), iterating onto the mark; visual homing later |
 | Bottom vision: part rotation and offset, pre-rotate, multi-pass, footprint-based | step E2 |
 | Nozzle tip calibration (runout compensation, model by angle) | step E3 |
 | Strip feeder hole vision | step E3 |
-| Camera settling (fixed time or motion detection) | step E1 |
+| Camera settling (fixed time or motion detection) | *partly*: fixed time (`settle`); motion detection later |
 | Lens calibration (undistort), advanced camera calibration | step E4 |
 | Camera light actuators (light on while imaging) | step E1 |
 | Vision compositing (large parts in several shots) | later |
@@ -116,9 +116,9 @@ measurement of units per pixel; web UI dashboard. Differences in behaviour: `ope
 
 ## Status (2026-11-24)
 
-A1, B1, C1 and D1 are done: a KiCad board can be imported, put in a job and placed from strip, tray and auto
-feeders on the simulator (`config/examples/simulated-grblhal.yaml` with `docs/examples/demo.pos`). Next: the
-bench, then D2 (fiducials, with E1), E2 (bottom vision), B2 (vacuum sensing), A4 (OpenPnP files).
+A1, B1, C1, D1 and D2 (with the first part of E1) are done: a KiCad board can be imported, put in a job and placed from strip, tray and auto
+feeders on the simulator (`config/examples/simulated-grblhal.yaml` with `docs/examples/demo.pos`). Dry run on the
+bench done (`../tinkerpnp-bench.md`). Next: E2 (bottom vision), B2 (vacuum sensing), A4 (OpenPnP files).
 
 ## Order
 
