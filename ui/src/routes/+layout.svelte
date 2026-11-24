@@ -14,6 +14,8 @@
 	import { ModeWatcher, mode, toggleMode } from 'mode-watcher';
 	import {
 		Cpu,
+		ListChecks,
+		Library,
 		Boxes,
 		Camera,
 		Settings2,
@@ -37,6 +39,8 @@
 
 	const nav = [
 		{ href: '/', label: 'Machine', icon: Cpu },
+		{ href: '/jobs', label: 'Jobs', icon: ListChecks },
+		{ href: '/library', label: 'Library', icon: Library },
 		{ href: '/cameras', label: 'Cameras', icon: Camera },
 		{ href: '/console', label: 'Console', icon: SquareTerminal },
 		{ href: '/objects', label: 'Objects', icon: Boxes },

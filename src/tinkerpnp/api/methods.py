@@ -331,6 +331,234 @@ async def camera_reopen(ctx: "Connection", id: str) -> dict:
     return {}
 
 
+# ── data.* (parts, packages, boards, jobs) ────────────────────────────────────────────────────────────────────
+
+def _data_methods(collection: str) -> None:
+    def changed(ctx: "Connection", item_id: str, revision: int | None, change: str) -> None:
+        ctx.app_state.notify_all("notify_data_changed", {"collection": collection, "id": item_id,
+                                                         "revision": revision, "change": change})
+
+    @rpc.method(f"data.{collection}.list", read_only=True)
+    def list_(ctx: "Connection", filter: str | None = None, sort: str = "id", limit: int = 500,
+              offset: int = 0) -> dict:
+        """Items of the collection (filter: text in the id or anywhere in the item)."""
+        return ctx.app_state.data.list(collection, filter, sort, limit, offset)
+
+    @rpc.method(f"data.{collection}.get", read_only=True)
+    def get(ctx: "Connection", id: str) -> dict:
+        """One item."""
+        return ctx.app_state.data.get(collection, id)
+
+    @rpc.method(f"data.{collection}.create")
+    def create(ctx: "Connection", item: dict) -> dict:
+        """Add an item (conflict if the id exists)."""
+        out = ctx.app_state.data.create(collection, item)
+        changed(ctx, out["id"], out["revision"], "created")
+        return out
+
+    @rpc.method(f"data.{collection}.update")
+    def update(ctx: "Connection", id: str, changes: dict, revision: int | None = None) -> dict:
+        """Change fields of an item (top-level fields are replaced); revision guards against lost updates."""
+        out = ctx.app_state.data.update(collection, id, changes, revision)
+        changed(ctx, id, out["revision"], "updated")
+        return out
+
+    @rpc.method(f"data.{collection}.delete")
+    def delete(ctx: "Connection", id: str, revision: int | None = None) -> dict:
+        """Remove an item."""
+        ctx.app_state.data.delete(collection, id, revision)
+        changed(ctx, id, None, "deleted")
+        return {}
+
+
+for _collection in ("parts", "packages", "boards", "jobs"):
+    _data_methods(_collection)
+
+
+@rpc.method("data.counts", read_only=True)
+def data_counts(ctx: "Connection") -> dict:
+    """Number of items per collection."""
+    return ctx.app_state.data.counts()
+
+
+# ── feeder.* / nozzle.* (picking and placing) ──────────────────────────────────────────────────────────────────
+
+def _feeder(ctx: "Connection", id: str):
+    f = ctx.app_state.machine.objects.get(f"feeder/{id}")
+    if f is None:
+        raise RpcError("not_found", f"no feeder {id!r}", what="feeder", id=id)
+    return f
+
+
+def _nozzle(ctx: "Connection", nozzle: str):
+    name = nozzle if "/" in nozzle else f"nozzle/{nozzle}"
+    n = ctx.app_state.machine.objects.get(name)
+    if n is None or n.kind != "nozzle":
+        raise RpcError("not_found", f"no nozzle {nozzle!r}", what="nozzle", id=nozzle)
+    return n
+
+
+def _part(ctx: "Connection", part_id: str | None) -> dict | None:
+    return ctx.app_state.data.find("parts", part_id) if part_id else None
+
+
+@rpc.method("feeder.feed")
+async def feeder_feed(ctx: "Connection", id: str) -> dict:
+    """Make the next part ready (actuator feeders feed; all check they aren't empty)."""
+    f = _feeder(ctx, id)
+    await _run(ctx, f.feed)
+    return {"pick_location": f.pick_location()}
+
+
+@rpc.method("feeder.pick_location", read_only=True)
+def feeder_pick_location(ctx: "Connection", id: str) -> dict:
+    """Where the next part is."""
+    f = _feeder(ctx, id)
+    return {"pick_location": f.pick_location(), "feeds_left": f.remaining(), "index": f.index()}
+
+
+@rpc.method("feeder.move_to_pick")
+async def feeder_move_to_pick(ctx: "Connection", id: str, object: str) -> dict:
+    """Move a camera (or a nozzle, staying at safe Z) over the next part, e.g. to check the pick location."""
+    f = _feeder(ctx, id)
+    planner = ctx.app_state.machine.planner
+    obj = planner.resolve(object)
+    loc = {k: v for k, v in f.pick_location().items() if k in ("x", "y")}
+    return {"location": await _run(ctx, planner.move_to, obj, loc)}
+
+
+@rpc.method("feeder.reset")
+def feeder_reset(ctx: "Connection", id: str, index: int = 0) -> dict:
+    """Set the feeder's counter (0 = full again, e.g. after loading a new tape)."""
+    f = _feeder(ctx, id)
+    f.set_index(index)
+    return {"index": f.index(), "feeds_left": f.remaining()}
+
+
+@rpc.method("nozzle.pick")
+async def nozzle_pick(ctx: "Connection", nozzle: str, feeder: str) -> dict:
+    """Pick the next part from a feeder with a nozzle."""
+    from ..core.pnp import pick
+    n, f = _nozzle(ctx, nozzle), _feeder(ctx, feeder)
+    ctx.app_state.machine.planner.require_ready()
+    return await _run(ctx, pick, ctx.app_state.machine, n, f, _part(ctx, f.settings.part))
+
+
+@rpc.method("nozzle.place")
+async def nozzle_place(ctx: "Connection", nozzle: str, location: dict) -> dict:
+    """Place the part on the nozzle at location (machine frame; z = surface it goes on, rotation = part angle)."""
+    from ..core.pnp import place
+    n = _nozzle(ctx, nozzle)
+    ctx.app_state.machine.planner.require_ready()
+    return await _run(ctx, place, ctx.app_state.machine, n, location, _part(ctx, n.status().get("part")))
+
+
+@rpc.method("nozzle.discard")
+async def nozzle_discard(ctx: "Connection", nozzle: str) -> dict:
+    """Drop the part on the nozzle at machine.discard_location."""
+    from ..core.pnp import discard
+    n = _nozzle(ctx, nozzle)
+    return await _run(ctx, discard, ctx.app_state.machine, n)
+
+
+# ── job.* ──────────────────────────────────────────────────────────────────────────────────────────────────────
+
+def _runner(ctx: "Connection"):
+    r = ctx.app_state.job
+    if r is None:
+        raise RpcError("invalid_params", "no job loaded (job.load)")
+    return r
+
+
+@rpc.method("job.load")
+def job_load(ctx: "Connection", job_id: str) -> dict:
+    """Load a job: plans its placements (enabled, not yet placed) and checks there are feeders for the parts."""
+    from ..core.jobs import JobRunner
+    current = ctx.app_state.job
+    if current is not None and current.state in ("running", "paused"):
+        raise RpcError("busy", "stop the running job first")
+    ctx.app_state.job = JobRunner.load(ctx.app_state.machine, ctx.app_state.data, job_id)
+    return {"placements": len(ctx.app_state.job.steps)}
+
+
+@rpc.method("job.start")
+def job_start(ctx: "Connection", dry_run: bool = False) -> dict:
+    """Run the loaded job (dry_run: move over feeders and placements without picking)."""
+    _runner(ctx).start(dry_run)
+    return {}
+
+
+@rpc.method("job.pause", immediate=True)
+def job_pause(ctx: "Connection") -> dict:
+    """Pause after the current placement."""
+    _runner(ctx).pause()
+    return {}
+
+
+@rpc.method("job.resume")
+def job_resume(ctx: "Connection") -> dict:
+    """Continue a paused job (after an error: retries the placement it stopped at)."""
+    _runner(ctx).resume()
+    return {}
+
+
+@rpc.method("job.step")
+def job_step(ctx: "Connection") -> dict:
+    """Run one placement, then pause."""
+    _runner(ctx).resume(step=True)
+    return {}
+
+
+@rpc.method("job.skip")
+def job_skip(ctx: "Connection") -> dict:
+    """Paused at a placement: leave it out of this run."""
+    r = _runner(ctx)
+    pending = next((s for s in r.steps if not s.done), None)
+    if pending is not None:
+        pending.done = True
+        r.event("skipped", placement=pending.placement)
+        r.publish()
+    return {}
+
+
+@rpc.method("job.stop")
+def job_stop(ctx: "Connection") -> dict:
+    """Stop after the current placement (machine.stop aborts at once)."""
+    _runner(ctx).stop()
+    return {}
+
+
+@rpc.method("job.plan", read_only=True)
+def job_plan(ctx: "Connection") -> list:
+    """The loaded job's placements in order, with machine locations."""
+    return _runner(ctx).plan()
+
+
+@rpc.method("job.reset")
+def job_reset(ctx: "Connection", job_id: str) -> dict:
+    """Mark every placement of a job as not placed (for the next board)."""
+    data = ctx.app_state.data
+    job = data.get("jobs", job_id)
+    boards = [{**b, "placed": []} for b in job.get("boards", [])]
+    out = data.update("jobs", job_id, {"boards": boards})
+    ctx.app_state.notify_all("notify_data_changed", {"collection": "jobs", "id": job_id,
+                                                     "revision": out["revision"], "change": "updated"})
+    return {}
+
+
+# ── import.* ───────────────────────────────────────────────────────────────────────────────────────────────────
+
+@rpc.method("import.kicad_pos")
+def import_kicad(ctx: "Connection", text: str, board_id: str, name: str | None = None, replace: bool = False) -> dict:
+    """Create a board from a KiCad placement file (.pos, ASCII or CSV); missing parts and packages are created."""
+    from ..core.imports import import_kicad_pos
+    out = import_kicad_pos(ctx.app_state.data, text, board_id, name, replace)
+    for coll in ("parts", "packages", "boards"):
+        ctx.app_state.notify_all("notify_data_changed", {"collection": coll, "id": "*", "revision": None,
+                                                         "change": "imported"})
+    return out
+
+
 # ── gcode.* (console) ──────────────────────────────────────────────────────────────────────────────────────────
 
 def _gcode_driver(ctx: "Connection", driver: str | None):

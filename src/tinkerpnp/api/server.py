@@ -25,6 +25,8 @@ from .methods import rpc
 class AppState:
     machine: Machine
     store: ConfigStore | None = None
+    data: Any = None                                 # core.data.DataStore
+    job: Any = None                                  # core.jobs.JobRunner (the loaded job)
     connections: dict[int, "Connection"] = field(default_factory=dict)
     started: float = field(default_factory=time.monotonic)
     _ids: Any = field(default_factory=lambda: itertools.count(1))
@@ -69,6 +71,11 @@ class AppState:
         self._machine_state = machine.state.status()["state"]
         machine.add_listener(self.on_status)
         machine.add_gcode_listener(self.on_gcode)
+        machine.state_store = self.data
+        machine.add_event_listener(self.notify_all)
+        self.job = None
+        for feeder in machine.of_kind("feeder"):
+            feeder.refresh_status()
 
 
 class Connection:
@@ -138,7 +145,15 @@ class Connection:
 DEFAULT_UI_DIR = Path(__file__).resolve().parents[3] / "ui" / "build"   # repo checkout: ui/build
 
 
-def create_app(machine: Machine, ui_dir: str | os.PathLike | None = None) -> FastAPI:
+def default_data_path(config_path: str | None) -> str:
+    """Parts, packages, boards and jobs live next to the configuration: machine.yaml -> machine.data.sqlite."""
+    if config_path and os.path.isfile(config_path):
+        base, _ = os.path.splitext(os.path.abspath(config_path))
+        return base + ".data.sqlite"
+    return ":memory:"
+
+
+def create_app(machine: Machine, ui_dir: str | os.PathLike | None = None, data_path: str | None = None) -> FastAPI:
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
@@ -146,6 +161,7 @@ def create_app(machine: Machine, ui_dir: str | os.PathLike | None = None) -> Fas
         yield
         # shutting down: stop motion, close the serial port and the cameras
         app.state.tinker.machine.close()
+        app.state.tinker.data.close()
 
     app = FastAPI(title="TinkerPnP API", version=__version__, lifespan=lifespan,
                   description="HTTP mirror of the JSON-RPC API; see docs/api.md. Subscriptions need the WebSocket.",
@@ -153,10 +169,16 @@ def create_app(machine: Machine, ui_dir: str | os.PathLike | None = None) -> Fas
     store = None
     if machine.config.path and os.path.isfile(machine.config.path):
         store = ConfigStore(machine.config.path, machine.config, machine.registry)
-    state = AppState(machine=machine, store=store, _machine_state=machine.state.status()["state"])
+    from ..core.data import DataStore
+    data = DataStore(data_path or default_data_path(machine.config.path))
+    state = AppState(machine=machine, store=store, data=data, _machine_state=machine.state.status()["state"])
     app.state.tinker = state
     machine.add_listener(state.on_status)
     machine.add_gcode_listener(state.on_gcode)
+    machine.state_store = data
+    machine.add_event_listener(state.notify_all)
+    for feeder in machine.of_kind("feeder"):
+        feeder.refresh_status()
 
     @app.websocket("/websocket")
     async def websocket_endpoint(ws: WebSocket) -> None:

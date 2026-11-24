@@ -17,6 +17,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check", action="store_true", help="validate the configuration and exit")
     parser.add_argument("--ui", default=None, help="directory of the built web UI (default: ui/build in the repo)")
     parser.add_argument("--log-level", default="info")
+    parser.add_argument("--data", default=None, help="parts/packages/boards/jobs database (SQLite); default: next to "
+                                                     "the configuration, <config>.data.sqlite")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=args.log_level.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -36,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     from .api.server import create_app
     from .core.machine import Machine
 
-    app = create_app(Machine(cfg), ui_dir=args.ui)
+    app = create_app(Machine(cfg), ui_dir=args.ui, data_path=args.data)
     # open browser connections (camera streams, WebSockets) must not keep a stopping server alive: a second server
     # started meanwhile would share the serial port with it
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level, timeout_graceful_shutdown=3)

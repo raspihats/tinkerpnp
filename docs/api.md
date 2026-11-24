@@ -250,6 +250,20 @@ planned; `camera.list` will then add a `webrtc` entry.
 
 Vacuum is normally switched by pick/place, not by clients; `actuator.set` is for manual control and testing.
 
+Implemented (2026-11-24), in addition:
+
+| Method | Params | Result |
+|---|---|---|
+| `feeder.reset` | `id`, `index` (default 0) | `{index, feeds_left}`: the feeder's counter (0 = full again) |
+| `nozzle.pick` | `nozzle`, `feeder` | `{part, feeder, pick_location}`: feed, pick (safe Z, down to the part top, vacuum on, dwell, up) |
+| `nozzle.place` | `nozzle`, `location` (machine frame; `z` = the surface, the part height is added; `rotation` = part angle) | `{part, location}` |
+| `nozzle.discard` | `nozzle` | `{part}`: drops the part at `machine.discard_location` |
+| `import.kicad_pos` | `text` (file content), `board_id`, `name`, `replace` | `{board, placements, fiducials, bottom, created_parts, created_packages}` |
+| `data.counts` | – | items per collection (read-only) |
+
+Feeder types: `static`, `strip` (first and last pocket, pitch), `tray` (rows × columns), `auto` (an actuator
+feeds). Their counters are kept in the data database, not in the configuration file.
+
 ## 11. Configuration
 
 The machine configuration (YAML, see [`config.md`](config.md)) is read and changed through these methods; the server
@@ -345,6 +359,11 @@ Imports are jobs that can take a while: they return when done (or with `wait: fa
 | `job.stop` | – | `{}`; stops after the current step (use `machine.stop` to abort immediately) |
 | `job.plan` | – | Planned order of placements per nozzle/feeder (read-only) |
 | `job.set_enabled` | `board`, `placement`, `enabled` | `{}` |
+
+Implemented: `job.load` (`job_id`; returns `{placements}`), `job.start` (`dry_run`), `job.pause`, `job.resume`,
+`job.step`, `job.skip` (leave out the placement it stopped at), `job.stop`, `job.plan`, `job.reset` (`job_id`:
+mark everything not placed). On an error (e.g. a feeder is empty) the job pauses with the reason in
+`job.message`; resume retries that placement. Bottom-side boards and fiducial checks: not yet.
 
 `notify_job_event`: `{"type": "placement_done" | "pick_failed" | "vision_failed" | "feeder_empty" | "paused" |
 "finished" | "error", "placement": ..., "message": ...}`.

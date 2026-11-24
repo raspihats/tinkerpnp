@@ -112,3 +112,6 @@ frontend/dist/
 *.db
 .env
 .env.*
+
+# TinkerPnP data (parts, packages, boards, jobs) next to configs
+*.data.sqlite

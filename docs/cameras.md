@@ -114,6 +114,18 @@ How the measurement avoids the traps found on the bench (2026-11-23):
 
 Result on the MC5S3DP-XHAT: two runs per camera agreed within 0.6 % and 1.3 %, and X and Y within about 1 %.
 
+## Decoding only what is watched
+
+Reading frames from a USB camera is cheap; decoding them (MJPG or YUYV to an image) is not. A camera keeps reading
+from its device while it is open, but decodes a frame only when someone waits for one (a live stream, a snapshot,
+later vision), at most `stream_fps` times a second. On the bench Pi, three cameras decoding every frame took more
+than two of its four cores and made the UI sluggish; on demand, an open camera nobody watches costs almost nothing
+and a thumbnail (one snapshot a second) one decode a second. The `fps` in a camera's status is the rate frames are
+delivered to viewers.
+
+The web UI also limits its connections: a browser opens at most 6 to one server, and every live MJPEG stream holds
+one. Live streams run only while their tab is visible, and thumbnails fetch single snapshots.
+
 ## When the device is open
 
 A camera opens its device when the first viewer arrives: a stream, a snapshot, or later vision. It closes

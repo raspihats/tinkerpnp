@@ -58,6 +58,8 @@ Pages:
 | Page | What it does |
 |---|---|
 | Machine | Dashboard of panels in 1–3 columns (by screen width): Camera (live view, click-to-move, calibration, thumbnails of the other cameras), Toolhead (position readout with the target of the last move, jog pad, Home/Park/Safe Z, step/rotation/speed, absolute moves), Actuators, Macros (buttons for `machine.macros`), Console, Nozzles, Axes. Drag a panel by its handle to move it, collapse it with its chevron; the layout is remembered in the browser (Reset layout puts it back) |
+| Jobs | Jobs: boards and where they lie on the machine; Load / Start / Pause / Step / Resume / Skip / Stop, dry run, progress and the placement list |
+| Library | Parts, packages, boards (JSON editor for now) and the KiCad `.pos` import |
 | Objects | Every object's live status |
 | Cameras | All camera streams with overlays (crosshair, scale, grid, info), snapshots, reopen, USB camera controls, and a scan of the video devices on the server |
 | Console | G-code console: live log of everything sent and received, command history, grblHAL shortcuts |

@@ -324,7 +324,8 @@ class Nozzle(HeadMountable):
         s = self.settings
         self.z = self.machine.get("axis", s.axes.z)
         self.rotation = self.machine.get("axis", s.axes.rotation)
-        self._status.update(location=self.compute_location(), tip=s.tip, part=None, vacuum=s.vacuum,
+        self._status.update(location=self.compute_location(), tip=s.tip, part=None, part_rotation=None,
+                            part_height=None, vacuum=s.vacuum,
                             vacuum_value=None, in_safe_zone=self.in_safe_zone())
 
     def compute_location(self) -> dict:
@@ -455,6 +456,9 @@ class CameraCommon(Settings):
 
 OVERLAYS = ("crosshair", "scale", "grid", "info")
 
+# grab(decode=False) returns this: the device delivered a frame, but nobody needed it decoded
+SKIPPED = object()
+
 
 class CameraBase(MachineObject):
     """Frames come from `open_device` / `grab` / `close_device` (camera types implement them) on a capture thread,
@@ -476,6 +480,7 @@ class CameraBase(MachineObject):
         self._seq = 0
         self._jpeg: dict[tuple, bytes] = {}         # (seq, overlays) -> JPEG
         self._users = 0
+        self._waiters = 0                           # threads in wait_frame (snapshots, streams)
         self._last_use = time.monotonic()
         self._thread: threading.Thread | None = None
         self._running = False
@@ -495,8 +500,9 @@ class CameraBase(MachineObject):
     # ── implemented by camera types ────────────────────────────────────────────────────────────────────────────
     def open_device(self) -> None: ...
 
-    def grab(self) -> Any:
-        """Block until the next frame (BGR numpy array); None if none came (the watchdog decides what then)."""
+    def grab(self, decode: bool = True) -> Any:
+        """Block until the next frame. decode=True: return it (BGR numpy array); decode=False: return SKIPPED (keep
+        the device going without the cost of decoding). None if no frame came (the watchdog decides what then)."""
         return None
 
     def close_device(self) -> None: ...
@@ -554,15 +560,21 @@ class CameraBase(MachineObject):
             return
         frames, t_fps = 0, time.monotonic()
         warm_until = time.monotonic() + self.settings.warmup / 1000.0
+        last_decode = 0.0
         try:
             while not self._stop.is_set():
+                # decode only when someone is waiting for a frame, and at most stream_fps times a second:
+                # a USB camera nobody looks at then costs almost nothing (bench: 3 cameras took 2+ Pi cores)
+                now = time.monotonic()
+                decode = (now >= warm_until and (self._users > 0 or self._waiters > 0)
+                          and now - last_decode >= 1.0 / self.settings.stream_fps)
                 with self._cond:   # decide and mark stopped under the lock, so acquire() starts a new thread
                     if (self.settings.idle_close > 0 and self._users == 0
                             and time.monotonic() - self._last_use > self.settings.idle_close / 1000):
                         self._running = False
                         break
                 try:
-                    frame = self.grab()
+                    frame = self.grab(decode)
                 except Exception as exc:
                     log.error("%s: %s", self.name, exc)
                     self.update(last_error=str(exc))
@@ -571,8 +583,15 @@ class CameraBase(MachineObject):
                     if self._stop.wait(0.05):
                         break
                     continue
-                if time.monotonic() < warm_until:
+                now = time.monotonic()
+                if now - t_fps >= 1.0:                     # fps = frames delivered to viewers
+                    self.update(fps=round(frames / (now - t_fps), 1))
+                    frames, t_fps = 0, now
+                if frame is SKIPPED:
+                    continue
+                if now < warm_until:
                     continue                       # still settling after opening: nobody sees this frame
+                last_decode = now
                 frame = self.apply_transform(frame)
                 with self._cond:
                     self._seq += 1
@@ -582,14 +601,8 @@ class CameraBase(MachineObject):
                         del self._jpeg[key]
                     self._cond.notify_all()
                 frames += 1
-                now = time.monotonic()
-                if now - t_fps >= 1.0:
-                    h, w = frame.shape[:2]
-                    self.update(streaming=True, fps=round(frames / (now - t_fps), 1), width=w, height=h)
-                    frames, t_fps = 0, now
-                elif not self._status.get("streaming"):
-                    h, w = frame.shape[:2]
-                    self.update(streaming=True, width=w, height=h)
+                h, w = frame.shape[:2]
+                self.update(streaming=True, width=w, height=h)
         finally:
             try:
                 self.close_device()
@@ -623,12 +636,16 @@ class CameraBase(MachineObject):
         """The newest frame with seq > after, waiting up to timeout seconds. None if none came."""
         deadline = time.monotonic() + timeout
         with self._cond:
-            while self._seq <= after or self._seq not in self._frames:
-                left = deadline - time.monotonic()
-                if left <= 0 or (not self._running and self._status.get("last_error")):
-                    return None
-                self._cond.wait(min(left, 0.25))
-            return self._seq, self._frames[self._seq]
+            self._waiters += 1
+            try:
+                while self._seq <= after or self._seq not in self._frames:
+                    left = deadline - time.monotonic()
+                    if left <= 0 or (not self._running and self._status.get("last_error")):
+                        return None
+                    self._cond.wait(min(left, 0.25))
+                return self._seq, self._frames[self._seq]
+            finally:
+                self._waiters -= 1
 
     def frame(self, seq: int) -> Any:
         with self._cond:
@@ -710,20 +727,4 @@ def _nice_step(value: float) -> float:
     return 10 ** exp
 
 
-# ── Feeders ────────────────────────────────────────────────────────────────────────────────────────────────────────
-
-class StaticFeederSettings(Settings):
-    part: str | None = None
-    pick_location: Location
-    enabled: bool = True
-
-
-@registry.register("feeder", "static", StaticFeederSettings, "Static feeder",
-                   "Fixed pick location (loose part, single pocket); no feeding mechanism")
-class StaticFeeder(MachineObject):
-    kind = "feeder"
-
-    def setup(self) -> None:
-        s = self.settings
-        self._status.update(enabled=s.enabled, part=s.part, pick_location=s.pick_location.as_dict(),
-                            feeds_left=None, last_error=None)
+# The feeder types are in feeders.py.

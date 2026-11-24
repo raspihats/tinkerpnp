@@ -27,6 +27,19 @@ Listener = Callable[[str, dict], None]
 BUILD_ORDER = ("driver", "axis", "head", "nozzle_tip", "actuator", "nozzle", "camera", "feeder")
 
 
+class MemoryState:
+    """Fallback for Machine.state_store (tests, no server): state kept in memory only."""
+
+    def __init__(self) -> None:
+        self._d: dict[str, Any] = {}
+
+    def state_get(self, key: str) -> Any:
+        return self._d.get(key)
+
+    def state_set(self, key: str, value: Any) -> None:
+        self._d[key] = value
+
+
 class Singleton(MachineObject):
     """`machine`, `motion`, `job`: objects without an id."""
 
@@ -46,7 +59,10 @@ class Machine:
         self.registry = reg or default_registry
         self.objects: dict[str, MachineObject] = {}
         self._listeners: list[Listener] = []
+        # where small state that changes often is kept (feeder counters): the server sets its data store here
+        self.state_store: Any = MemoryState()
         self._gcode_listeners: list[Callable[[str, str, str], None]] = []
+        self._event_listeners: list[Callable[[str, dict], None]] = []
         self._building = True
 
         first_nozzle = next((o.id for o in config.objects if o.kind == "nozzle"), None)
@@ -54,7 +70,7 @@ class Machine:
                                message=None, selected_tool=f"nozzle/{first_nozzle}" if first_nozzle else None)
         self.motion = Singleton("motion", self, moving=False, last_move=None, safe_z=None, queue_length=0)
         self.job = Singleton("job", self, state="none", job_id=None, name=None,
-                             progress={"done": 0, "total": 0}, current_placement=None, elapsed=0.0, errors=[])
+                             progress={"done": 0, "total": 0}, current_placement=None, elapsed=0.0, message=None)
         for s in (self.state, self.motion, self.job):
             self.objects[s.name] = s
 
@@ -106,6 +122,14 @@ class Machine:
     def remove_gcode_listener(self, fn: Callable[[str, str, str], None]) -> None:
         if fn in self._gcode_listeners:
             self._gcode_listeners.remove(fn)
+
+    def add_event_listener(self, fn: Callable[[str, dict], None]) -> None:
+        self._event_listeners.append(fn)
+
+    def emit(self, method: str, params: dict) -> None:
+        """A notification for all clients (e.g. notify_job_event). Any thread."""
+        for fn in list(self._event_listeners):
+            fn(method, params)
 
     def log_gcode(self, driver_id: str, direction: str, line: str) -> None:
         """Every line a driver sends ("tx") or receives ("rx"), for console views."""
@@ -389,8 +413,7 @@ class Machine:
             cam.update(location=cam.compute_location(),
                        units_per_pixel=s.units_per_pixel.model_dump() if s.units_per_pixel else None)
         for feeder in self.of_kind("feeder"):
-            pick = getattr(feeder.settings, "pick_location", None)
-            feeder.update(pick_location=pick.as_dict() if pick else None, part=getattr(feeder.settings, "part", None))
+            feeder.refresh_status()
         self._refresh_dependents()
 
     def _refresh_dependents(self) -> None:

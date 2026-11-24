@@ -94,3 +94,27 @@ feeders:
     name: Loose part on the bed
     part: R0805-1K
     pick_location: {x: 237.9, y: 119.5, z: 6.0, rotation: 0}
+  # strips and a tray holding the parts of docs/examples/demo.pos (KiCad import, board "demo")
+  S1:
+    type: strip
+    name: 100n 0603 tape
+    part: C_0603_1608Metric-100n
+    first: {x: 60, y: 300, z: 6, rotation: 90}
+    last: {x: 160, y: 300}
+    pitch: 4
+  S2:
+    type: strip
+    name: 10k 0805 tape
+    part: R_0805_2012Metric-10k
+    first: {x: 60, y: 315, z: 6, rotation: 90}
+    last: {x: 160, y: 315}
+    pitch: 4
+  T1:
+    type: tray
+    name: STM32 tray
+    part: LQFP-64_10x10mm_P0.5mm-STM32F411
+    first: {x: 400, y: 250, z: 5}
+    columns: 3
+    rows: 2
+    column_step: {x: 15, y: 0}
+    row_step: {x: 0, y: 15}

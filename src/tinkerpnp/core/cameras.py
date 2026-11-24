@@ -17,7 +17,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from .errors import MachineError
-from .objects import CameraBase, CameraCommon, Nozzle
+from .objects import SKIPPED, CameraBase, CameraCommon, Nozzle
 from .registry import registry
 from .units import DurationMs
 
@@ -49,7 +49,7 @@ class SimulatedCamera(CameraBase):
         import cv2  # noqa: F401  (fail early with a clear error if OpenCV is missing)
         self._next = time.monotonic()
 
-    def grab(self) -> Any:
+    def grab(self, decode: bool = True) -> Any:
         self._next += 1.0 / self.settings.fps
         delay = self._next - time.monotonic()
         if delay > 0:
@@ -57,6 +57,8 @@ class SimulatedCamera(CameraBase):
                 return None
         else:
             self._next = time.monotonic()
+        if not decode:
+            return SKIPPED                          # nobody looks: don't draw
         scene = self.settings.scene
         if scene == "auto":
             scene = "bed" if self.settings.looking == "down" else "nozzles"
@@ -346,17 +348,20 @@ class V4l2Camera(CameraBase):
         if problems:
             self.update(last_error="; ".join(problems))
 
-    def grab(self) -> Any:
+    def grab(self, decode: bool = True) -> Any:
         cap = self._cap
         if cap is None:
             return None
-        ok, frame = cap.read()
+        ok = cap.grab()                               # take the frame from the device (cheap) ...
+        frame = None
+        if ok and decode:
+            ok, frame = cap.retrieve()                # ... and decode it only when needed (expensive)
         now = time.monotonic()
-        if ok and frame is not None:
+        if ok:
             self._last_frame = now
             if str(self._status.get("last_error") or "").startswith("no frame"):
                 self.update(last_error=None)          # recovered after the watchdog
-            return frame
+            return frame if decode else SKIPPED
         if not self._path.startswith(DEV):          # a video file ended: start over (tests, demos)
             import cv2
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)

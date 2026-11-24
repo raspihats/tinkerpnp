@@ -218,3 +218,21 @@ def test_units_per_pixel_through_the_api(api):
     assert r.status_code == 200, r.text
     v = r.json()["result"]
     assert v["value"]["x"] == pytest.approx(0.02, rel=0.05) and v["details"]["mirrored_x"] is False
+
+
+def test_frames_are_decoded_only_on_demand(m):
+    """An open camera that nobody watches keeps reading the device but doesn't decode (or draw) frames."""
+    cam = m.get("camera", "top")
+    cam.settings.idle_close = 60000                       # stays open after the viewer leaves
+    cam.settings.stream_fps = 50
+    cam.acquire()
+    cam.wait_frame(0, 3)
+    time.sleep(0.5)
+    watched = cam._seq
+    cam.release()
+    time.sleep(0.6)
+    seq = cam._seq
+    time.sleep(0.6)
+    assert cam._running and cam._seq == seq               # open, but no new frames without a viewer
+    assert watched >= 3
+    assert cam.snapshot()[0] > seq                        # a snapshot still gets a fresh one

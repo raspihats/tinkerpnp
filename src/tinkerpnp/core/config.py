@@ -13,7 +13,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from ruamel.yaml import YAML
 
-from . import cameras, gcode, objects  # noqa: F401  (registers the built-in types)
+from . import cameras, feeders, gcode, objects  # noqa: F401  (registers the built-in types)
 from .objects import Location, Settings
 from .registry import Registry, registry as default_registry
 
@@ -278,6 +278,9 @@ def _check_references(cfg: MachineConfig) -> None:
             if s.axes is not None:
                 need("axis", s.axes.z, f"{o.path}.axes.z")
                 need("axis", s.axes.rotation, f"{o.path}.axes.rotation")
+        if o.kind == "feeder" and o.type == "auto":
+            need("actuator", s.feed_actuator, f"{o.path}.feed_actuator", optional=True)
+            need("actuator", s.post_pick_actuator, f"{o.path}.post_pick_actuator", optional=True)
         if o.kind == "actuator" and o.type == "gcode":
             need("driver", s.driver, f"{o.path}.driver")
     park = cfg.machine.park
