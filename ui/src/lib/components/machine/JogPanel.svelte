@@ -1,19 +1,36 @@
 <script lang="ts">
 	// Jogging and absolute moves for the selected tool (machine.selected_tool, shared by all clients).
 	// Keys (when no input has focus): arrows = X/Y, Page Up/Down = Z, comma/period = rotation, Shift = 10x step.
-	import { tinker, fmt, idOf } from '#lib/api/client.svelte.js';
-	import { Badge } from '#lib/components/ui/badge/index.js';
+	import { tinker, idOf } from '#lib/api/client.svelte.js';
+	import { segmentItem } from '#lib/styles.js';
+	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
-	import { ArrowUp, ArrowDown, ArrowLeft, ArrowRight, ChevronsUp, ChevronsDown, RotateCcw, RotateCw, LoaderCircle } from '@lucide/svelte';
+	import { Input } from '#lib/components/ui/input/index.js';
+	import { Label } from '#lib/components/ui/label/index.js';
+	import { Switch } from '#lib/components/ui/switch/index.js';
+	import Dro from './Dro.svelte';
+	import {
+		ArrowUp,
+		ArrowDown,
+		ArrowLeft,
+		ArrowRight,
+		ChevronsUp,
+		ChevronsDown,
+		RotateCcw,
+		RotateCw,
+		LoaderCircle,
+		Move,
+		TriangleAlert
+	} from '@lucide/svelte';
 
 	let { tools, distances, liftDefault = true }: { tools: string[]; distances: number[]; liftDefault?: boolean } = $props();
 
 	const ROTATIONS = [0.1, 1, 5, 15, 45, 90];
 	const SPEEDS = [0.1, 0.25, 0.5, 1];
 
-	let step = $state(1);
-	let rotStep = $state(5);
-	let speed = $state(0.5);
+	let step = $state('1');
+	let rotStep = $state('5');
+	let speed = $state('0.5');
 	// raise all nozzles to safe Z before X/Y jogs; starts from machine.jog.safe_z and is not remembered on purpose
 	let lift = $state(true);
 	$effect(() => {
@@ -22,7 +39,8 @@
 	let target = $state<{ x: string; y: string; z: string; rotation: string }>({ x: '', y: '', z: '', rotation: '' });
 
 	$effect(() => {
-		if (!distances.includes(step)) step = distances.includes(1) ? 1 : distances[Math.floor(distances.length / 2)];
+		const d = distances.map(String);
+		if (!d.includes(step)) step = d.includes('1') ? '1' : d[Math.floor(d.length / 2)];
 	});
 
 	const machine = $derived(tinker.status['machine'] ?? {});
@@ -32,18 +50,21 @@
 	const moving = $derived(tinker.isBusy('motion.jog', 'motion.move_to'));
 
 	function jog(delta: Record<string, number>) {
-		if (!tool || !ready || moving) return;        // one jog at a time: holding a key doesn't queue up moves
-		tinker.act('motion.jog', { object: tool, delta, speed, safe_z: lift ? 'auto' : 'none' });
+		if (!tool || !ready || moving) return; // one jog at a time: holding a key doesn't queue up moves
+		tinker.act('motion.jog', { object: tool, delta, speed: Number(speed), safe_z: lift ? 'auto' : 'none' });
 	}
+	const s = () => Number(step);
+	const r = () => Number(rotStep);
 
-	function moveTo() {
+	function moveTo(e: SubmitEvent) {
+		e.preventDefault();
 		if (!tool) return;
 		const location: Record<string, number> = {};
 		for (const k of ['x', 'y', 'z', 'rotation'] as const) {
 			const v = target[k].trim();
 			if (v !== '') location[k] = Number(v);
 		}
-		if (Object.keys(location).length) tinker.act('motion.move_to', { object: tool, location, speed });
+		if (Object.keys(location).length) tinker.act('motion.move_to', { object: tool, location, speed: Number(speed) });
 	}
 
 	function onKey(e: KeyboardEvent) {
@@ -51,14 +72,14 @@
 		if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
 		const k = e.shiftKey ? 10 : 1;
 		const map: Record<string, Record<string, number>> = {
-			ArrowLeft: { x: -step * k },
-			ArrowRight: { x: step * k },
-			ArrowUp: { y: step * k },
-			ArrowDown: { y: -step * k },
-			PageUp: { z: step * k },
-			PageDown: { z: -step * k },
-			',': { rotation: rotStep },
-			'.': { rotation: -rotStep }
+			ArrowLeft: { x: -s() * k },
+			ArrowRight: { x: s() * k },
+			ArrowUp: { y: s() * k },
+			ArrowDown: { y: -s() * k },
+			PageUp: { z: s() * k },
+			PageDown: { z: -s() * k },
+			',': { rotation: r() },
+			'.': { rotation: -r() }
 		};
 		const delta = map[e.key];
 		if (delta) {
@@ -66,91 +87,102 @@
 			jog(delta);
 		}
 	}
+
+	const pad = 'size-12 rounded-lg';
 </script>
 
 <svelte:window onkeydown={onKey} />
 
-<div class="flex flex-col gap-3 text-sm">
-	<div class="flex flex-wrap items-center gap-1">
-		<span class="mr-1 text-xs text-muted-foreground">Tool</span>
-		{#each tools as t (t)}
-			<button onclick={() => tinker.act('machine.select_tool', { object: t })}>
-				<Badge variant={t === tool ? 'default' : 'outline'}>{idOf(t)}</Badge>
-			</button>
-		{/each}
+<div class="flex flex-col gap-4">
+	<div class="flex flex-wrap items-center justify-between gap-2">
+		<span class="eyebrow">Tool</span>
+		<ToggleGroup.Root
+			type="single"
+			variant="outline"
+			size="sm"
+			value={tool ?? ''}
+			onValueChange={(v) => v && tinker.act('machine.select_tool', { object: v })}
+		>
+			{#each tools as t (t)}
+				<ToggleGroup.Item value={t} class={segmentItem}>{idOf(t)}</ToggleGroup.Item>
+			{/each}
+		</ToggleGroup.Root>
 	</div>
 
-	<div class="grid grid-cols-4 gap-1 rounded-md bg-muted/60 p-2 text-center font-mono tabular-nums">
-		{#each [['X', loc.x], ['Y', loc.y], ['Z', loc.z], ['R', loc.rotation]] as [label, v] (label)}
-			<div>
-				<div class="text-[10px] text-muted-foreground">{label}</div>
-				<div class="text-base font-semibold">{fmt(v as number | undefined, 3)}</div>
+	<Dro location={loc} />
+
+	<div class="flex items-center justify-center gap-6">
+		<!-- X/Y pad -->
+		<div class="grid grid-cols-3 gap-1.5">
+			<span></span>
+			<Button variant="secondary" class={pad} disabled={!ready} onclick={() => jog({ y: s() })} title="Y+ (↑)"><ArrowUp class="size-5" /></Button>
+			<span></span>
+			<Button variant="secondary" class={pad} disabled={!ready} onclick={() => jog({ x: -s() })} title="X− (←)"><ArrowLeft class="size-5" /></Button>
+			<div class="flex size-12 items-center justify-center rounded-lg border border-dashed text-muted-foreground">
+				{#if moving}<LoaderCircle class="size-5 animate-spin text-busy" />{:else}<Move class="size-4" />{/if}
 			</div>
-		{/each}
-	</div>
-
-	<div class="flex items-start gap-4">
-		<div class="grid grid-cols-3 gap-1">
+			<Button variant="secondary" class={pad} disabled={!ready} onclick={() => jog({ x: s() })} title="X+ (→)"><ArrowRight class="size-5" /></Button>
 			<span></span>
-			<Button variant="outline" size="icon" disabled={!ready} onclick={() => jog({ y: step })} title="Y+ (↑)"><ArrowUp /></Button>
-			<span></span>
-			<Button variant="outline" size="icon" disabled={!ready} onclick={() => jog({ x: -step })} title="X− (←)"><ArrowLeft /></Button>
-			<span class="flex items-center justify-center">{#if moving}<LoaderCircle class="size-4 animate-spin text-muted-foreground" />{/if}</span>
-			<Button variant="outline" size="icon" disabled={!ready} onclick={() => jog({ x: step })} title="X+ (→)"><ArrowRight /></Button>
-			<span></span>
-			<Button variant="outline" size="icon" disabled={!ready} onclick={() => jog({ y: -step })} title="Y− (↓)"><ArrowDown /></Button>
+			<Button variant="secondary" class={pad} disabled={!ready} onclick={() => jog({ y: -s() })} title="Y− (↓)"><ArrowDown class="size-5" /></Button>
 			<span></span>
 		</div>
-		<div class="grid gap-1">
-			<Button variant="outline" size="icon" disabled={!ready} onclick={() => jog({ z: step })} title="Z+ (Page Up)"><ChevronsUp /></Button>
-			<Button variant="outline" size="icon" disabled={!ready} onclick={() => jog({ z: -step })} title="Z− (Page Down)"><ChevronsDown /></Button>
+		<!-- Z -->
+		<div class="flex flex-col items-center gap-1.5">
+			<Button variant="secondary" class={pad} disabled={!ready} onclick={() => jog({ z: s() })} title="Z+ (Page Up)"><ChevronsUp class="size-5" /></Button>
+			<span class="text-xs font-bold text-axis-z">Z</span>
+			<Button variant="secondary" class={pad} disabled={!ready} onclick={() => jog({ z: -s() })} title="Z− (Page Down)"><ChevronsDown class="size-5" /></Button>
 		</div>
-		<div class="grid gap-1">
-			<Button variant="outline" size="icon" disabled={!ready} onclick={() => jog({ rotation: rotStep })} title="Rotate + (,)"><RotateCcw /></Button>
-			<Button variant="outline" size="icon" disabled={!ready} onclick={() => jog({ rotation: -rotStep })} title="Rotate − (.)"><RotateCw /></Button>
-		</div>
-		<div class="flex flex-col gap-1 text-xs">
-			<label class="flex items-center justify-between gap-2">Step
-				<select class="rounded border bg-background px-1 py-0.5" bind:value={step}>
-					{#each distances as d (d)}<option value={d}>{d} mm</option>{/each}
-				</select>
-			</label>
-			<label class="flex items-center justify-between gap-2">Rotate
-				<select class="rounded border bg-background px-1 py-0.5" bind:value={rotStep}>
-					{#each ROTATIONS as d (d)}<option value={d}>{d}°</option>{/each}
-				</select>
-			</label>
-			<label class="flex items-center justify-between gap-2">Speed
-				<select class="rounded border bg-background px-1 py-0.5" bind:value={speed}>
-					{#each SPEEDS as v (v)}<option value={v}>{v * 100} %</option>{/each}
-				</select>
-			</label>
+		<!-- rotation -->
+		<div class="flex flex-col items-center gap-1.5">
+			<Button variant="secondary" class={pad} disabled={!ready} onclick={() => jog({ rotation: r() })} title="Rotate + (,)"><RotateCcw class="size-5" /></Button>
+			<span class="text-xs font-bold text-axis-r">R</span>
+			<Button variant="secondary" class={pad} disabled={!ready} onclick={() => jog({ rotation: -r() })} title="Rotate − (.)"><RotateCw class="size-5" /></Button>
 		</div>
 	</div>
 
-	<label class="flex items-center gap-2 text-xs">
-		<input type="checkbox" bind:checked={lift} />
-		Raise Z before X/Y jogs
+	<div class="grid grid-cols-[4.5rem_1fr] items-center gap-x-3 gap-y-2">
+		<span class="eyebrow">Step</span>
+		<ToggleGroup.Root type="single" variant="outline" size="sm" bind:value={step} class="w-full">
+			{#each distances as d (d)}
+				<ToggleGroup.Item value={String(d)} class="flex-1 font-mono {segmentItem}">{d}</ToggleGroup.Item>
+			{/each}
+		</ToggleGroup.Root>
+		<span class="eyebrow">Rotate °</span>
+		<ToggleGroup.Root type="single" variant="outline" size="sm" bind:value={rotStep} class="w-full">
+			{#each ROTATIONS as d (d)}
+				<ToggleGroup.Item value={String(d)} class="flex-1 font-mono {segmentItem}">{d}</ToggleGroup.Item>
+			{/each}
+		</ToggleGroup.Root>
+		<span class="eyebrow">Speed</span>
+		<ToggleGroup.Root type="single" variant="outline" size="sm" bind:value={speed} class="w-full">
+			{#each SPEEDS as v (v)}
+				<ToggleGroup.Item value={String(v)} class="flex-1 font-mono {segmentItem}">{v * 100}%</ToggleGroup.Item>
+			{/each}
+		</ToggleGroup.Root>
+	</div>
+
+	<div class="flex flex-col gap-1.5">
+		<div class="flex items-center gap-2.5">
+			<Switch id="lift" bind:checked={lift} />
+			<Label for="lift" class="text-sm font-normal">Raise Z before X/Y jogs</Label>
+		</div>
 		{#if !lift}
-			<span class="rounded bg-amber-100 px-1.5 py-0.5 text-amber-900 dark:bg-amber-950 dark:text-amber-200">
-				off: X/Y jogs stay at this Z — watch for anything under the nozzles
-			</span>
+			<p class="flex items-center gap-1.5 rounded-md bg-warn/12 px-2.5 py-1.5 text-xs text-warn">
+				<TriangleAlert class="size-3.5 shrink-0" /> X/Y jogs stay at this Z: watch for anything under the nozzles
+			</p>
 		{/if}
-	</label>
+	</div>
 
-	<form class="flex items-center gap-1" onsubmit={(e) => { e.preventDefault(); moveTo(); }}>
-		{#each ['x', 'y', 'z', 'rotation'] as const as k (k)}
-			<input
-				class="w-full min-w-0 rounded border bg-background px-1.5 py-1 font-mono text-xs"
-				placeholder={k === 'rotation' ? 'R' : k.toUpperCase()}
-				inputmode="decimal"
-				bind:value={target[k]}
-			/>
+	<form class="flex items-center gap-1.5" onsubmit={moveTo}>
+		{#each [['x', 'X'], ['y', 'Y'], ['z', 'Z'], ['rotation', 'R']] as const as [k, label] (k)}
+			<Input class="h-8 min-w-0 font-mono text-xs" placeholder={label} inputmode="decimal" aria-label="target {label}" bind:value={target[k]} />
 		{/each}
-		<Button type="submit" size="sm" disabled={!ready || moving}>Go</Button>
+		<Button type="submit" size="sm" class="h-8" disabled={!ready || moving}>Go</Button>
 	</form>
-	<p class="text-xs text-muted-foreground">
-		Arrows, Page Up/Down and , . jog (Shift: ×10). Empty fields keep their value. Go, Park and click-to-move always
-		raise the nozzles to safe Z before X/Y travel.
+
+	<p class="text-xs leading-relaxed text-muted-foreground">
+		<kbd class="kbd">←→↑↓</kbd> X/Y · <kbd class="kbd">PgUp</kbd><kbd class="kbd">PgDn</kbd> Z ·
+		<kbd class="kbd">,</kbd><kbd class="kbd">.</kbd> rotate · <kbd class="kbd">Shift</kbd> ×10. Go, Park and click-to-move
+		always raise to safe Z before X/Y travel.
 	</p>
 </div>

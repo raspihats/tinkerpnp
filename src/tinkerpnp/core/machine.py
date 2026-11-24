@@ -354,7 +354,14 @@ class Machine:
         for oc in config.objects:
             obj = self.objects.get(f"{oc.kind}/{oc.id}")
             if obj is not None and obj.type == oc.type:
+                old = obj.settings
                 obj.settings = oc.settings
+                # camera device controls: set them now if the device is open (otherwise on the next open)
+                new_controls = getattr(oc.settings, "controls", None)
+                if (new_controls is not None and new_controls != getattr(old, "controls", None)
+                        and hasattr(obj, "apply_controls") and obj.status().get("device") and obj._running):
+                    problems = obj.apply_controls(new_controls)
+                    obj.update(last_error="; ".join(problems) or None)
         for cam in self.of_kind("camera"):
             s = cam.settings
             cam.update(location=cam.compute_location(),

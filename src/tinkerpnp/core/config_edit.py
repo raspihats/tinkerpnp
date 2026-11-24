@@ -26,8 +26,9 @@ _INDEX = re.compile(r"^\d+$")
 # Calibration values that can change while the machine is enabled: they're applied to the running machine without
 # rebuilding it (Machine.apply_live), so homing and positions are kept. Everything else needs a disabled machine.
 LIVE_PATHS = [re.compile(p) for p in (
-    r"^cameras\.[^.]+\.(location|units_per_pixel|transform|name|notes)(\..*)?$",
-    r"^heads\.[^.]+\.cameras\.[^.]+\.(offset|units_per_pixel|transform|name|notes)(\..*)?$",
+    r"^cameras\.[^.]+\.(location|units_per_pixel|transform|controls|warmup|stream_fps|jpeg_quality|name|notes)(\..*)?$",
+    r"^heads\.[^.]+\.cameras\.[^.]+\.(offset|units_per_pixel|transform|controls|warmup|stream_fps|jpeg_quality|name|notes)"
+    r"(\..*)?$",
     r"^heads\.[^.]+\.nozzles\.[^.]+\.(offset|name|notes)(\..*)?$",
     r"^machine\.(park|jog|discard_location)(\..*)?$",
     r"^feeders\.[^.]+\.(pick_location|name|notes|part)(\..*)?$",

@@ -80,6 +80,11 @@ Notes:
 - Controls are set with `v4l2-ctl` when it is installed (`sudo apt install v4l-utils`), which knows every control
   the camera has. Without it, the common ones (brightness, contrast, saturation, gain, exposure, focus, white
   balance, ...) go through OpenCV. Controls that can't be set are shown as the camera's `last_error`.
+- Autofocus cameras: switch autofocus off for a fixed scale (`focus_automatic_continuous: false`, or
+  `focus_auto` on older kernels). Some cameras ignore `focus_absolute` (the Sonix "Webcam Vitade AF", `0c45:6366`,
+  does: a sweep from 0 to 1023 changed nothing). With those, let autofocus focus on the nozzle at its focus height,
+  then switch autofocus off: the lens stays there. Camera controls can be changed and saved while the machine is
+  enabled (Cameras page, Controls, then "Save to configuration").
 - The format actually delivered (cameras round to what they support) is in the camera's status, `actual`.
 - Control names differ between kernels: newer ones say `focus_automatic_continuous` and `auto_exposure`, older ones
   `focus_auto` and `exposure_auto`. `camera.controls` lists the names this camera has.

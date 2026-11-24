@@ -2,9 +2,10 @@
 	// Live view of one camera. On a head-mounted, down-looking camera with units_per_pixel, a click moves the camera
 	// so that the clicked point comes under the crosshair (like OpenPnP's camera view).
 	import { tinker, fmt, idOf } from '#lib/api/client.svelte.js';
-	import { Badge } from '#lib/components/ui/badge/index.js';
+	import { segmentItem } from '#lib/styles.js';
 	import { Button } from '#lib/components/ui/button/index.js';
-	import { MousePointerClick } from '@lucide/svelte';
+	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
+	import { MousePointerClick, Crosshair, Ruler, LocateFixed, Check, X, LoaderCircle, TriangleAlert } from '@lucide/svelte';
 
 	let { id, headMounted = false, tool = null }: { id: string; headMounted?: boolean; tool?: string | null } = $props();
 
@@ -100,70 +101,89 @@
 		if (target) tinker.act('motion.move_to', { object: `camera/${id}`, location: target });
 	}
 
-	function toggle(o: string) {
-		overlays = overlays.includes(o) ? overlays.filter((x) => x !== o) : [...overlays, o];
-	}
 </script>
 
-<div class="flex flex-col gap-1.5">
-	<div class="overflow-hidden rounded-md bg-black">
+<div class="flex flex-col gap-3">
+	<div class="relative overflow-hidden rounded-lg bg-black ring-1 ring-black/10">
 		<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
 		<img
 			{src}
 			alt="camera {id}"
-			class="block h-auto w-full {movable ? 'cursor-crosshair' : ''}"
+			class="block aspect-[4/3] h-auto w-full object-contain {movable ? 'cursor-crosshair' : ''}"
 			onclick={onClick}
 			onmousemove={onMove}
 			onmouseleave={() => (cursor = null)}
 		/>
-	</div>
-	<div class="flex flex-wrap items-center gap-1 text-xs">
-		{#each OVERLAYS as o (o)}
-			<button onclick={() => toggle(o)}><Badge variant={overlays.includes(o) ? 'default' : 'outline'}>{o}</Badge></button>
-		{/each}
-		<span class="ml-auto font-mono text-muted-foreground tabular-nums">
-			{#if cursor}
-				→ X {fmt(cursor.x, 2)} Y {fmt(cursor.y, 2)}
-			{:else}
-				X {fmt(loc.x, 2)} Y {fmt(loc.y, 2)} · {fmt(s.fps, 0)} fps
-			{/if}
-		</span>
-		{#if movable}
-			<span class="flex items-center gap-1 text-muted-foreground" title="Click in the image to move the camera there">
-				<MousePointerClick class="size-3.5" /> click to move
+		<!-- heads-up readouts on the image -->
+		<div class="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between p-2 text-[11px]">
+			<span class="num rounded bg-black/60 px-1.5 py-0.5 text-white/90">
+				{s.looking === 'up' ? '↑' : '↓'} X {fmt(loc.x, 2)} Y {fmt(loc.y, 2)}{loc.z !== undefined ? ` Z ${fmt(loc.z, 2)}` : ''}
+			</span>
+			<span class="num rounded bg-black/60 px-1.5 py-0.5 text-white/90">
+				{s.width ?? '–'}×{s.height ?? '–'} · {fmt(s.fps, 0)} fps
+			</span>
+		</div>
+		{#if cursor}
+			<span class="num pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded bg-primary px-2 py-0.5 text-[11px] font-semibold text-primary-foreground">
+				{movable ? 'click → ' : ''}X {fmt(cursor.x, 2)} Y {fmt(cursor.y, 2)}
 			</span>
 		{/if}
 	</div>
+
+	<div class="flex flex-wrap items-center gap-2">
+		<ToggleGroup.Root type="multiple" variant="outline" size="sm" bind:value={overlays} aria-label="overlays">
+			{#each OVERLAYS as o (o)}
+				<ToggleGroup.Item value={o} class="capitalize {segmentItem}">{o}</ToggleGroup.Item>
+			{/each}
+		</ToggleGroup.Root>
+		{#if movable}
+			<span class="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground">
+				<MousePointerClick class="size-3.5" /> Click in the image to move there
+			</span>
+		{/if}
+	</div>
+
 	{#if machineCamUp && nozzle}
-		<div class="flex flex-wrap items-center gap-1 text-xs">
+		<div class="flex flex-wrap items-center gap-1.5">
+			<span class="eyebrow mr-1">Calibrate with {idOf(nozzle)}</span>
 			<Button variant="outline" size="sm" disabled={!homed} onclick={moveHere} title="Move {idOf(nozzle)} to this camera's location (safe Z first)">
-				Move {idOf(nozzle)} here
+				<LocateFixed /> Move here
 			</Button>
-			<Button variant="outline" size="sm" disabled={!homed} onclick={capture} title="Use where {idOf(nozzle)} is now as this camera's location">
-				Set location from {idOf(nozzle)}
+			<Button variant="outline" size="sm" disabled={!homed} onclick={capture} title="Use where {idOf(nozzle)} is now (centred, in focus) as this camera's location">
+				<Crosshair /> Set location
 			</Button>
 			<Button variant="outline" size="sm" disabled={!homed || measuring} onclick={measureUpp}
-				title="With {idOf(nozzle)} centred and in focus: move it 1 mm in X and in Y at this height and measure how far the image moves">
-				{measuring ? 'Measuring…' : `Measure mm/px with ${idOf(nozzle)}`}
+				title="With {idOf(nozzle)} centred and in focus: move it 0.5 and 1 mm in X and Y at this height and measure how far the image moves">
+				{#if measuring}<LoaderCircle class="animate-spin" /> Measuring…{:else}<Ruler /> Measure mm/px{/if}
 			</Button>
-			{#if captured}
-				<span class="rounded bg-muted px-2 py-1 font-mono">
-					X {fmt(loc.x, 3)} → {fmt(captured.x, 3)} · Y {fmt(loc.y, 3)} → {fmt(captured.y, 3)} · Z {fmt(loc.z, 3)} → {fmt(captured.z, 3)}
-				</span>
-				<Button size="sm" onclick={saveCapture}>Save</Button>
-				<Button variant="ghost" size="sm" onclick={() => (captured = null)}>Cancel</Button>
-			{/if}
-			{#if upp_result}
-				{@const d = upp_result.details}
-				<span class="rounded bg-muted px-2 py-1 font-mono">
-					{fmt(upp?.x, 5)} × {fmt(upp?.y, 5)} → {upp_result.value.x.toFixed(5)} × {upp_result.value.y.toFixed(5)} mm/px
-					· view {d.field_of_view_mm[0]} × {d.field_of_view_mm[1]} mm · rotated {d.rotation_deg}°
-					{#if d.mirrored_x || d.mirrored_y}· <span class="text-amber-700 dark:text-amber-400">mirrored {d.mirrored_x ? 'X' : ''}{d.mirrored_y ? 'Y' : ''} (set transform.flip_{d.mirrored_x ? 'x' : 'y'})</span>{/if}
-				</span>
-				<Button size="sm" onclick={saveUpp}>Save</Button>
-				<Button variant="ghost" size="sm" onclick={() => (upp_result = null)}>Cancel</Button>
-			{/if}
 		</div>
+		{#if captured}
+			<div class="flex flex-wrap items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-xs">
+				<span class="font-medium">New location</span>
+				{#each ['x', 'y', 'z'] as const as k (k)}
+					<span class="num"><span class="text-muted-foreground uppercase">{k}</span> {fmt(loc[k], 3)} → <b>{fmt(captured[k], 3)}</b></span>
+				{/each}
+				<span class="ml-auto flex gap-1">
+					<Button size="sm" onclick={saveCapture}><Check /> Save</Button>
+					<Button variant="ghost" size="sm" onclick={() => (captured = null)}><X /> Cancel</Button>
+				</span>
+			</div>
+		{/if}
+		{#if upp_result}
+			{@const d = upp_result.details}
+			<div class="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-xs">
+				<span class="font-medium">Measured</span>
+				<span class="num">{fmt(upp?.x, 5)} × {fmt(upp?.y, 5)} → <b>{upp_result.value.x.toFixed(5)} × {upp_result.value.y.toFixed(5)}</b> mm/px</span>
+				<span class="text-muted-foreground">view {d.field_of_view_mm[0]} × {d.field_of_view_mm[1]} mm · rotated {d.rotation_deg}°</span>
+				{#if d.mirrored_x || d.mirrored_y}<span class="text-warn">mirrored in {d.mirrored_x ? 'X' : ''}{d.mirrored_y ? 'Y' : ''}</span>{/if}
+				<span class="ml-auto flex gap-1">
+					<Button size="sm" onclick={saveUpp}><Check /> Save</Button>
+					<Button variant="ghost" size="sm" onclick={() => (upp_result = null)}><X /> Cancel</Button>
+				</span>
+			</div>
+		{/if}
 	{/if}
-	{#if s.last_error}<p class="text-xs text-destructive">{s.last_error}</p>{/if}
+	{#if s.last_error}
+		<p class="flex items-center gap-1.5 text-xs text-alarm"><TriangleAlert class="size-3.5" /> {s.last_error}</p>
+	{/if}
 </div>

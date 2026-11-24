@@ -182,3 +182,12 @@ def test_capture_location(client):
     assert client.get("/api/config/capture_helpers").json()["result"][0]["name"] == "location"
     r = client.post("/api/config/capture", json={"field": "x", "from": "magic", "args": {"object": "nozzle/N1"}})
     assert r.status_code == 400
+
+
+def test_camera_controls_change_live(client):
+    """Camera settings that only concern the camera may change while the machine is enabled."""
+    client.post("/api/machine/enable")
+    r = update(client, [{"op": "set", "path": "cameras.bottom.stream_fps", "value": 5}])
+    assert r.status_code == 200, r.json()
+    assert client.app_state.machine.get("camera", "bottom").settings.stream_fps == 5
+    assert client.app_state.machine.state.status()["homed"]

@@ -4,6 +4,9 @@
 	import * as Table from '#lib/components/ui/table/index.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
+	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
+	import { segmentItem } from '#lib/styles.js';
+	import { Check, CircleCheck, CircleX, FileCode, History, RotateCcw, Save, Undo2 } from '@lucide/svelte';
 
 	type JsonSchema = {
 		properties?: Record<string, { type?: string; description?: string; default?: unknown; anyOf?: { type?: string; $ref?: string }[]; $ref?: string }>;
@@ -145,26 +148,28 @@
 	] as const;
 </script>
 
-<div class="mb-4 flex items-center gap-2">
-	{#each tabs as t (t.id)}
-		<button onclick={() => (tab = t.id)}><Badge variant={tab === t.id ? 'default' : 'outline'}>{t.label}</Badge></button>
-	{/each}
-	{#if revision !== null}<span class="ml-auto text-sm text-muted-foreground">revision {revision}</span>{/if}
+<div class="mb-4 flex flex-wrap items-center gap-3">
+	<ToggleGroup.Root type="single" variant="outline" size="sm" value={tab} onValueChange={(v) => v && (tab = v as typeof tab)}>
+		{#each tabs as t (t.id)}
+			<ToggleGroup.Item value={t.id} class={segmentItem}>{t.label}</ToggleGroup.Item>
+		{/each}
+	</ToggleGroup.Root>
+	{#if revision !== null}<Badge variant="outline" class="ml-auto font-mono">revision {revision}</Badge>{/if}
 </div>
 
-{#if loadError}<p class="mb-2 text-destructive">{loadError}</p>{/if}
+{#if loadError}<p class="mb-2 text-sm text-alarm">{loadError}</p>{/if}
 
 {#if tab === 'edit'}
-	<div class="grid gap-4 lg:grid-cols-[16rem_1fr]">
-		<Card.Card class="gap-2 py-3">
-			<Card.CardContent class="px-3 text-sm">
+	<div class="grid items-start gap-4 lg:grid-cols-[15rem_1fr]">
+		<Card.Card size="sm" class="gap-0">
+			<Card.CardContent class="text-sm">
 				{#each SECTIONS as section (section)}
 					{@const items = objectsIn(section)}
 					{#if items.length}
-						<div class="mt-2 mb-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">{section.replace('_', ' ')}</div>
+						<div class="eyebrow mt-3 mb-1 px-2 first:mt-0">{section.replace('_', ' ')}</div>
 						{#each items as path (path)}
 							<button
-								class="block w-full rounded px-2 py-1 text-left font-mono text-xs hover:bg-muted {selected === path ? 'bg-muted font-semibold' : ''}"
+								class="block w-full rounded-md px-2 py-1 text-left font-mono text-xs transition-colors hover:bg-accent {selected === path ? 'bg-primary/15 font-semibold text-primary' : 'text-foreground/90'}"
 								onclick={() => select(path)}
 							>
 								{path === 'machine' ? 'machine' : path.split('.').slice(1).join('.')}
@@ -175,32 +180,34 @@
 			</Card.CardContent>
 		</Card.Card>
 
-		<Card.Card class="gap-3 py-3">
+		<Card.Card class="gap-3">
 			{#if selected}
-				<Card.CardHeader class="px-3">
-					<Card.CardTitle class="font-mono text-sm">{selected}</Card.CardTitle>
+				<Card.CardHeader>
+					<Card.CardTitle class="flex items-center gap-2 font-mono text-sm"><FileCode class="size-4 text-muted-foreground" />{selected}</Card.CardTitle>
 					<Card.CardDescription>
 						Settings as JSON. Values may carry units, e.g. <code>"6000 mm/min"</code>. Validate checks the whole
 						configuration without saving; Save writes the file (comments are kept) and rebuilds the machine.
 					</Card.CardDescription>
 				</Card.CardHeader>
-				<Card.CardContent class="flex flex-col gap-3 px-3">
+				<Card.CardContent class="flex flex-col gap-3">
 					<textarea
-						class="min-h-80 w-full rounded-md border bg-background p-2 font-mono text-xs"
+						class="min-h-96 w-full rounded-lg border border-input bg-well p-3 font-mono text-xs leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
 						spellcheck="false"
 						bind:value={text}
 					></textarea>
 					<div class="flex items-center gap-2">
-						<Button variant="outline" size="sm" disabled={busy} onclick={() => submit(true)}>Validate</Button>
-						<Button size="sm" disabled={busy || text === original} onclick={() => submit(false)}>Save</Button>
-						<Button variant="ghost" size="sm" disabled={busy || text === original} onclick={() => (text = original)}>Revert</Button>
-						{#if text !== original}<span class="text-xs text-muted-foreground">unsaved changes</span>{/if}
+						<Button variant="outline" disabled={busy} onclick={() => submit(true)}><Check /> Validate</Button>
+						<Button disabled={busy || text === original} onclick={() => submit(false)}><Save /> Save</Button>
+						<Button variant="ghost" disabled={busy || text === original} onclick={() => (text = original)}><RotateCcw /> Revert</Button>
+						{#if text !== original}<Badge variant="warn" class="ml-auto">unsaved changes</Badge>{/if}
 					</div>
 					{#if message}
-						<p class="text-sm {message.kind === 'ok' ? 'text-green-700 dark:text-green-400' : 'text-destructive'}">{message.text}</p>
+						<p class="flex items-center gap-1.5 text-sm {message.kind === 'ok' ? 'text-ok' : 'text-alarm'}">
+							{#if message.kind === 'ok'}<CircleCheck class="size-4" />{:else}<CircleX class="size-4" />{/if}{message.text}
+						</p>
 					{/if}
 					{#if problems.length}
-						<ul class="rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs">
+						<ul class="rounded-lg border border-alarm/30 bg-alarm/5 p-3 text-xs leading-5">
 							{#each problems as p (p.path + p.message)}
 								<li><span class="font-mono">{p.path}</span>: {p.message}</li>
 							{/each}
@@ -208,7 +215,7 @@
 					{/if}
 				</Card.CardContent>
 			{:else}
-				<Card.CardContent class="px-3 text-sm text-muted-foreground">Pick an object on the left to edit it.</Card.CardContent>
+				<Card.CardContent class="py-10 text-center text-sm text-muted-foreground">Pick an object on the left to edit it.</Card.CardContent>
 			{/if}
 		</Card.Card>
 	</div>
@@ -217,11 +224,11 @@
 		Every object type the server knows, including plugin types, with the settings fields from its JSON Schema.
 	</p>
 	{#each Object.entries(byKind) as [kind, list] (kind)}
-		<h2 class="mt-6 mb-2 text-lg font-semibold capitalize">{kind.replace('_', ' ')}</h2>
+		<h2 class="mt-6 mb-2 text-base font-semibold capitalize first:mt-0">{kind.replace('_', ' ')}</h2>
 		<div class="grid gap-3 lg:grid-cols-2">
 			{#each list as t (t.type)}
-				<Card.Card class="gap-2 py-3">
-					<Card.CardHeader class="px-3">
+				<Card.Card size="sm" class="gap-2">
+					<Card.CardHeader>
 						<Card.CardTitle class="flex items-center gap-2 text-sm">
 							{t.title}
 							<Badge variant="outline" class="font-mono">{t.type}</Badge>
@@ -229,13 +236,13 @@
 						</Card.CardTitle>
 						{#if t.description}<Card.CardDescription>{t.description}</Card.CardDescription>{/if}
 					</Card.CardHeader>
-					<Card.CardContent class="px-3">
+					<Card.CardContent>
 						<Table.Table>
 							<Table.TableBody>
 								{#each Object.entries(t.schema.properties ?? {}) as [field, p] (field)}
 									<Table.TableRow>
 										<Table.TableCell class="font-mono text-xs">
-											{field}{#if t.schema.required?.includes(field)}<span class="text-destructive"> *</span>{/if}
+											{field}{#if t.schema.required?.includes(field)}<span class="text-alarm"> *</span>{/if}
 										</Table.TableCell>
 										<Table.TableCell class="text-xs text-muted-foreground">{typeName(p)}</Table.TableCell>
 										<Table.TableCell class="text-xs">{p.description ?? ''}</Table.TableCell>
@@ -249,8 +256,9 @@
 		</div>
 	{/each}
 {:else if tab === 'history'}
-	<Card.Card class="py-3">
-		<Card.CardContent class="px-3">
+	<Card.Card class="gap-3">
+		<Card.CardHeader><Card.CardTitle class="flex items-center gap-2 text-sm"><History class="size-4 text-muted-foreground" /> Changes since the server started</Card.CardTitle></Card.CardHeader>
+		<Card.CardContent>
 			{#if history.length}
 				<Table.Table>
 					<Table.TableHeader>
@@ -265,13 +273,13 @@
 					<Table.TableBody>
 						{#each history as h (h.revision)}
 							<Table.TableRow>
-								<Table.TableCell>{h.revision}</Table.TableCell>
+								<Table.TableCell class="num">{h.revision}</Table.TableCell>
 								<Table.TableCell class="text-xs">{new Date(h.time * 1000).toLocaleString()}</Table.TableCell>
 								<Table.TableCell class="text-xs">{h.client}</Table.TableCell>
 								<Table.TableCell class="font-mono text-xs">{h.summary}</Table.TableCell>
 								<Table.TableCell class="text-right">
 									<Button variant="outline" size="sm" disabled={busy} onclick={() => undoTo(h.revision - 1)}>
-										Undo (back to {h.revision - 1})
+										<Undo2 /> Back to {h.revision - 1}
 									</Button>
 								</Table.TableCell>
 							</Table.TableRow>
@@ -282,10 +290,10 @@
 				<p class="text-sm text-muted-foreground">No changes since the server started.</p>
 			{/if}
 			{#if historyMessage}
-				<p class="mt-2 text-sm {historyMessage.kind === 'ok' ? 'text-green-700 dark:text-green-400' : 'text-destructive'}">{historyMessage.text}</p>
+				<p class="mt-2 text-sm {historyMessage.kind === 'ok' ? 'text-ok' : 'text-alarm'}">{historyMessage.text}</p>
 			{/if}
 		</Card.CardContent>
 	</Card.Card>
 {:else}
-	<pre class="overflow-x-auto rounded-lg bg-muted p-3 text-xs">{JSON.stringify(config, null, 2)}</pre>
+	<pre class="overflow-x-auto rounded-xl border bg-well p-4 font-mono text-xs leading-5">{JSON.stringify(config, null, 2)}</pre>
 {/if}

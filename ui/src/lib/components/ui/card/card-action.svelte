@@ -14,7 +14,7 @@
 	bind:this={ref}
 	data-slot="card-action"
 	class={cn(
-		"col-start-2 row-span-2 row-start-1 self-start justify-self-end",
+		"col-start-2 row-span-2 row-start-1 self-start justify-self-end ml-auto", // ml-auto: also right-aligned in flex headers (TinkerUI)
 		className
 	)}
 	{...restProps}

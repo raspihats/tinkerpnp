@@ -5,7 +5,11 @@
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
-	import { TriangleAlert } from '@lucide/svelte';
+	import { Switch } from '#lib/components/ui/switch/index.js';
+	import { Label } from '#lib/components/ui/label/index.js';
+	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
+	import { segmentItem } from '#lib/styles.js';
+	import { TriangleAlert, SquareTerminal, Eraser, SendHorizontal, ChevronRight } from '@lucide/svelte';
 
 	type Line = { n: number; driver: string; direction: 'tx' | 'rx' | 'info'; line: string };
 
@@ -134,11 +138,12 @@
 	}
 
 	function lineClass(l: Line): string {
-		if (l.direction === 'info') return 'text-destructive';
-		if (l.direction === 'tx') return 'text-sky-700 dark:text-sky-400';
-		if (/^(error|ALARM)/.test(l.line)) return 'text-destructive font-semibold';
-		if (/^ok/.test(l.line)) return 'text-muted-foreground';
-		return '';
+		if (l.direction === 'info') return 'text-alarm';
+		if (l.direction === 'tx') return 'text-primary';
+		if (/^(error|ALARM)/.test(l.line)) return 'text-alarm font-semibold';
+		if (/^ok/.test(l.line)) return 'text-muted-foreground/70';
+		if (/^\[MSG/.test(l.line)) return 'text-warn';
+		return 'text-foreground/90';
 	}
 
 	function shownText(s: string): string {
@@ -160,65 +165,74 @@
 	];
 </script>
 
-<div class="flex h-[calc(100vh-9rem)] flex-col gap-3">
-	<div class="flex flex-wrap items-center gap-2 text-sm">
-		{#if drivers.length > 1}
-			{#each drivers as d (d)}
-				<button onclick={() => (driver = d)}><Badge variant={driver === d ? 'default' : 'outline'}>{d}</Badge></button>
-			{/each}
-		{:else if driver}
-			<span class="font-mono">driver/{driver}</span>
-		{/if}
-		{#if driverStatus}
-			<Badge variant={driverStatus.connected ? 'secondary' : 'outline'}>{driverStatus.connected ? 'connected' : 'not connected'}</Badge>
-			{#if driverStatus.firmware}<span class="text-xs text-muted-foreground">{driverStatus.firmware}</span>{/if}
-			{#if driverStatus.last_error}<span class="text-xs text-destructive">{driverStatus.last_error}</span>{/if}
-		{/if}
-		<label class="ml-auto flex items-center gap-1.5 text-xs">
-			<input type="checkbox" bind:checked={hideStatus} /> hide status reports
-		</label>
-		<Button variant="ghost" size="sm" onclick={() => (lines = [])}>Clear</Button>
-	</div>
-
+<div class="flex h-[calc(100vh-7.5rem)] flex-col">
 	{#if !drivers.length}
-		<Card.Card class="py-4"><Card.CardContent class="text-sm text-muted-foreground">
-			This machine has no G-code driver.
-		</Card.CardContent></Card.Card>
+		<Card.Root><Card.Content class="text-sm text-muted-foreground">This machine has no G-code driver.</Card.Content></Card.Root>
 	{:else}
-		<div
-			bind:this={logEl}
-			onscroll={onScroll}
-			class="min-h-0 flex-1 overflow-y-auto rounded-lg border bg-background p-2 font-mono text-xs leading-5"
-		>
-			{#each shown as l (l.n)}
-				<div class="whitespace-pre-wrap break-all {lineClass(l)}">
-					<span class="mr-2 select-none text-muted-foreground">{l.direction === 'tx' ? '→' : l.direction === 'rx' ? '←' : '!'}</span>{shownText(l.line)}
-				</div>
-			{/each}
-		</div>
+		<Card.Root class="min-h-0 flex-1 gap-0 py-0">
+			<Card.Header class="flex flex-wrap items-center gap-2 border-b py-2.5">
+				<SquareTerminal class="size-4 text-muted-foreground" />
+				{#if drivers.length > 1}
+					<ToggleGroup.Root type="single" variant="outline" size="sm" bind:value={driver as string}>
+						{#each drivers as d (d)}<ToggleGroup.Item value={d} class={segmentItem}>{d}</ToggleGroup.Item>{/each}
+					</ToggleGroup.Root>
+				{:else}
+					<Card.Title class="font-mono text-sm">driver/{driver}</Card.Title>
+				{/if}
+				{#if driverStatus}
+					<Badge variant={driverStatus.connected ? 'ok' : 'outline'}>{driverStatus.connected ? 'connected' : 'not connected'}</Badge>
+					{#if driverStatus.firmware}<span class="num hidden text-xs text-muted-foreground md:inline">{driverStatus.firmware}</span>{/if}
+				{/if}
+				<Card.Action class="flex items-center gap-3">
+					<div class="flex items-center gap-2">
+						<Switch id="status" checked={!hideStatus} onCheckedChange={(v) => (hideStatus = !v)} />
+						<Label for="status" class="text-xs font-normal text-muted-foreground">Status reports</Label>
+					</div>
+					<Button variant="ghost" size="sm" onclick={() => (lines = [])}><Eraser /> Clear</Button>
+				</Card.Action>
+			</Card.Header>
 
-		{#if isGrbl}
-			<div class="flex flex-wrap gap-1">
-				{#each grblQuick as q (q.label)}
-					<Button variant="outline" size="sm" class="font-mono" title={q.title} disabled={sending && q.cmd.length > 1} onclick={() => send(q.cmd)}>{q.label}</Button>
+			<div bind:this={logEl} onscroll={onScroll} class="min-h-0 flex-1 overflow-y-auto bg-well px-4 py-3 font-mono text-[12.5px] leading-6">
+				{#each shown as l (l.n)}
+					<div class="break-all whitespace-pre-wrap {lineClass(l)}">
+						<span class="mr-2 inline-block w-3 text-muted-foreground/60 select-none">{l.direction === 'tx' ? '›' : l.direction === 'rx' ? '' : '!'}</span>{shownText(l.line)}
+					</div>
+				{:else}
+					<p class="text-muted-foreground">No traffic yet.</p>
 				{/each}
 			</div>
-		{/if}
 
-		<div class="flex items-center gap-2">
-			<Input
-				class="font-mono"
-				placeholder={'G-code, e.g. G1 X10 F3000 — several lines with \\n, control bytes as \\x18'}
-				bind:value={command}
-				onkeydown={onKey}
-				spellcheck={false}
-				autocomplete="off"
-			/>
-			<Button disabled={!command.trim() || sending} onclick={() => send()}>Send</Button>
-		</div>
-		<p class="flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-400">
-			<TriangleAlert class="size-3.5" />
-			Commands go straight to the controller: no soft limits, no safe Z. The position is read back afterwards.
-		</p>
+			<div class="flex flex-col gap-2 border-t p-3">
+				{#if driverStatus?.last_error}
+					<p class="flex items-center gap-1.5 text-xs text-alarm"><TriangleAlert class="size-3.5" /> {driverStatus.last_error}</p>
+				{/if}
+				{#if isGrbl}
+					<div class="flex flex-wrap gap-1">
+						{#each grblQuick as q (q.label)}
+							<Button variant="outline" size="xs" class="font-mono" title={q.title} disabled={sending && q.cmd.length > 1} onclick={() => send(q.cmd)}>{q.label}</Button>
+						{/each}
+					</div>
+				{/if}
+				<div class="flex items-center gap-2">
+					<div class="relative flex-1">
+						<ChevronRight class="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-primary" />
+						<Input
+							class="h-9 pl-8 font-mono"
+							placeholder={'G-code, e.g. G1 X10 F3000 (several lines with \\n, control bytes as \\x18)'}
+							bind:value={command}
+							onkeydown={onKey}
+							spellcheck={false}
+							autocomplete="off"
+						/>
+					</div>
+					<Button class="h-9" disabled={!command.trim() || sending} onclick={() => send()}><SendHorizontal /> Send</Button>
+				</div>
+				<p class="flex items-center gap-1.5 text-xs text-muted-foreground">
+					<TriangleAlert class="size-3.5 text-warn" />
+					Commands go straight to the controller: no soft limits, no safe Z. The position is read back afterwards.
+					<span class="ml-auto hidden sm:inline"><kbd class="kbd">↑</kbd><kbd class="kbd">↓</kbd> history</span>
+				</p>
+			</div>
+		</Card.Root>
 	{/if}
 </div>
