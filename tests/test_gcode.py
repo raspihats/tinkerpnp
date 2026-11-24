@@ -316,3 +316,28 @@ def test_closing_an_idle_machine_sends_no_stop_sequence(m):
     m.add_gcode_listener(lambda drv, direction, line: lines.append(line))
     m.close()
     assert "\x18" not in lines and "!" not in lines
+
+
+def test_macros(m):
+    run(m, m.enable)
+    f = fake(m)
+    run(m, m.run_macro, "N2 to bottom camera")
+    assert m.get("nozzle", "N2").compute_location()["x"] == pytest.approx(189.9)
+    run(m, m.run_macro, "Pick test N1")
+    assert f.outputs["spindle"] == 1000.0 and f.outputs["aux0"] == 1.0 and pos(m, "z") == 57
+    f.received.clear()
+    run(m, m.run_macro, "Status report")
+    with pytest.raises(MachineError) as e:
+        run(m, m.run_macro, "nope")
+    assert e.value.name == "not_found"
+    last = m.motion.status()["last_move"]
+    assert last["requested"]["z"] == 30 and last["object"] == "nozzle/N1"
+
+
+def test_macro_steps_are_validated():
+    data = config_data()
+    data["machine"]["macros"] = {"bad": [{"move_to": {"object": "nozzle/N9", "location": {"x": 1}}}, {"fly": 1}]}
+    with pytest.raises(ConfigError) as e:
+        build_config(data, EXAMPLE)
+    paths = [p.path for p in e.value.problems]
+    assert paths == ["machine.macros.bad[0].move_to.object", "machine.macros.bad[1]"]

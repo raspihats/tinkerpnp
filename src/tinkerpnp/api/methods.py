@@ -157,6 +157,13 @@ async def machine_clear_alarm(ctx: "Connection") -> dict:
     return {}
 
 
+@rpc.method("machine.run_macro")
+async def machine_run_macro(ctx: "Connection", name: str) -> dict:
+    """Run a macro from machine.macros (a named list of steps)."""
+    await _run(ctx, ctx.app_state.machine.run_macro, name)
+    return {}
+
+
 @rpc.method("machine.select_tool")
 def machine_select_tool(ctx: "Connection", object: str) -> dict:
     """Set machine.selected_tool (shared by all clients)."""

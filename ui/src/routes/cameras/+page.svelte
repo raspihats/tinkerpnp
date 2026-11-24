@@ -8,6 +8,7 @@
 	import { Switch } from '#lib/components/ui/switch/index.js';
 	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
 	import { segmentItem } from '#lib/styles.js';
+	import StreamImg from '#lib/components/machine/StreamImg.svelte';
 	import { Camera, RefreshCw, SlidersHorizontal, Aperture, Usb, ScanSearch, Info, TriangleAlert, Save } from '@lucide/svelte';
 
 	type CameraInfo = {
@@ -55,10 +56,6 @@
 	});
 
 
-	function streamUrl(c: CameraInfo): string {
-		const ov = (overlays[c.id] ?? []).join(',');
-		return `${c.stream_url}?${ov ? `overlay=${ov}&` : ''}k=${streamKey}`;
-	}
 
 	const st = (id: string) => tinker.status[`camera/${id}`] ?? {};
 
@@ -149,7 +146,9 @@
 			</Card.Header>
 			<Card.Content class="flex flex-col gap-3">
 				<div class="relative overflow-hidden rounded-lg bg-black">
-					<img src={streamUrl(c)} alt="camera {c.id}" class="mx-auto block aspect-[4/3] max-h-[60vh] w-full object-contain" />
+					{#key streamKey}
+						<StreamImg camera={c.id} overlay={(overlays[c.id] ?? []).join(',')} alt="camera {c.id}" class="mx-auto block aspect-[4/3] max-h-[60vh] w-full object-contain" />
+					{/key}
 					<span class="num absolute top-2 right-2 rounded bg-black/60 px-1.5 py-0.5 text-[11px] text-white/90">
 						{s.width ?? '–'}×{s.height ?? '–'} · {fmt(s.fps, 0)} fps
 					</span>

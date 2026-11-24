@@ -9,6 +9,9 @@
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Separator } from '#lib/components/ui/separator/index.js';
+	import * as Popover from '#lib/components/ui/popover/index.js';
+	import { Toaster } from '#lib/components/ui/sonner/index.js';
+	import { ModeWatcher, mode, toggleMode } from 'mode-watcher';
 	import {
 		Cpu,
 		Boxes,
@@ -17,12 +20,15 @@
 		SquareTerminal,
 		LoaderCircle,
 		OctagonX,
-		X,
 		Sun,
 		Moon,
 		TriangleAlert,
 		RefreshCw,
-		Crosshair
+		Crosshair,
+		Bell,
+		CircleCheck,
+		Info,
+		CircleX
 	} from '@lucide/svelte';
 
 	let { children }: LayoutProps = $props();
@@ -42,18 +48,13 @@
 	const enabled = $derived(machine.enabled === true);
 	const current = $derived(nav.find((n) => n.href === page.url.pathname) ?? nav[0]);
 
-	// theme: dark unless chosen otherwise (app.html sets it before the first paint)
-	let dark = $state(true);
-	onMount(() => (dark = document.documentElement.classList.contains('dark')));
-	function toggleTheme() {
-		dark = !dark;
-		document.documentElement.classList.toggle('dark', dark);
-		try {
-			localStorage.setItem('tinkerui.theme', dark ? 'dark' : 'light');
-		} catch {
-			/* private window: not remembered */
-		}
-	}
+	// theme: mode-watcher (shadcn's), dark unless the viewer chose light; remembered per browser
+	const dark = $derived(mode.current !== 'light');
+	const toggleTheme = () => toggleMode();
+
+	const levelIcon = { error: CircleX, warn: TriangleAlert, info: Info, ok: CircleCheck } as const;
+	const levelColor = { error: 'text-alarm', warn: 'text-warn', info: 'text-muted-foreground', ok: 'text-ok' } as const;
+	const time = (t: number) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
 	function stop() {
 		tinker.act('machine.stop', { reason: 'stop button (TinkerUI)' });
@@ -69,6 +70,8 @@
 </script>
 
 <svelte:window onkeydown={onKey} />
+<ModeWatcher defaultMode="dark" track={false} />
+<Toaster position="bottom-right" richColors closeButton />
 
 <svelte:head>
 	<link rel="icon" href={favicon} />
@@ -147,7 +150,43 @@
 				{/if}
 			</div>
 			{#if machine.message}<span class="hidden truncate text-xs text-muted-foreground lg:block">{machine.message}</span>{/if}
-			<div class="ml-auto">
+			<div class="ml-auto flex items-center gap-2">
+				<Popover.Root onOpenChange={(open) => open && (tinker.unread = 0)}>
+					<Popover.Trigger>
+						{#snippet child({ props })}
+							<Button {...props} variant="ghost" size="icon" class="relative" title="Messages">
+								<Bell />
+								{#if tinker.unread}
+									<span class="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-alarm px-1 text-[10px] font-semibold text-white">
+										{tinker.unread > 9 ? '9+' : tinker.unread}
+									</span>
+								{/if}
+							</Button>
+						{/snippet}
+					</Popover.Trigger>
+					<Popover.Content align="end" class="w-96 p-0">
+						<div class="flex items-center border-b px-3 py-2">
+							<span class="text-sm font-semibold">Messages</span>
+							{#if tinker.notifications.length}
+								<Button variant="ghost" size="xs" class="ml-auto" onclick={() => (tinker.notifications = [])}>Clear</Button>
+							{/if}
+						</div>
+						<div class="max-h-96 overflow-y-auto">
+							{#each tinker.notifications as n (n.id)}
+								{@const Icon = levelIcon[n.level]}
+								<div class="flex gap-2.5 border-b px-3 py-2 text-xs last:border-0">
+									<Icon class="mt-0.5 size-3.5 shrink-0 {levelColor[n.level]}" />
+									<div class="min-w-0 flex-1">
+										<p class="break-words">{n.text}</p>
+										<p class="mt-0.5 text-[11px] text-muted-foreground">{time(n.time)}{n.name ? ` · ${n.name}` : ''}</p>
+									</div>
+								</div>
+							{:else}
+								<p class="px-3 py-6 text-center text-xs text-muted-foreground">No messages.</p>
+							{/each}
+						</div>
+					</Popover.Content>
+				</Popover.Root>
 				<Button
 					variant="destructive"
 					class="h-9 gap-2 px-4 font-semibold tracking-wide {enabled ? 'bg-alarm text-white hover:bg-alarm/90 dark:bg-alarm' : ''}"
@@ -173,15 +212,6 @@
 				<Button size="sm" variant="outline" class="ml-auto" onclick={() => location.reload()}>Reload</Button>
 			</div>
 		{/if}
-		{#if tinker.notice}
-			<div class="flex items-center gap-2 border-b bg-alarm/10 px-4 py-1.5 text-sm">
-				<TriangleAlert class="size-4 shrink-0 text-alarm" />
-				<span>{tinker.notice.text}</span>
-				{#if tinker.notice.name}<Badge variant="outline" class="font-mono">{tinker.notice.name}</Badge>{/if}
-				<Button variant="ghost" size="icon-sm" class="ml-auto" title="Dismiss" onclick={() => (tinker.notice = null)}><X /></Button>
-			</div>
-		{/if}
-
 		<main class="min-w-0 flex-1 p-4 lg:p-5">
 			{#if tinker.connection !== 'connected' && !tinker.objects.length}
 				<div class="flex h-64 flex-col items-center justify-center gap-3 text-muted-foreground">

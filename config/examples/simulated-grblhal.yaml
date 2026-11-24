@@ -13,6 +13,21 @@ machine:
     location: {x: 1, y: 1}
   jog:
     safe_z: always
+  macros:                          # buttons on the Machine page; run with machine.run_macro
+    N1 to bottom camera:
+      - move_to: {object: nozzle/N1, location: {x: 189.9, y: 49.5, z: 38.0}}
+    N2 to bottom camera:
+      - move_to: {object: nozzle/N2, location: {x: 189.9, y: 49.5, z: 38.0}}
+    Valves off:
+      - actuate: {valve1: off, valve2: off}
+    Pick test N1:                  # vacuum on, down, wait, up
+      - actuate: {pump: on, valve1: on}
+      - dwell: 300
+      - move_to: {object: nozzle/N1, location: {z: 30}}
+      - dwell: 200
+      - safe_z
+    Status report:
+      - gcode: "?"
 
 drivers:
   grbl:

@@ -30,7 +30,7 @@ LIVE_PATHS = [re.compile(p) for p in (
     r"^heads\.[^.]+\.cameras\.[^.]+\.(offset|units_per_pixel|transform|controls|warmup|stream_fps|jpeg_quality|name|notes)"
     r"(\..*)?$",
     r"^heads\.[^.]+\.nozzles\.[^.]+\.(offset|name|notes)(\..*)?$",
-    r"^machine\.(park|jog|discard_location)(\..*)?$",
+    r"^machine\.(park|jog|discard_location|macros)(\..*)?$",
     r"^feeders\.[^.]+\.(pick_location|name|notes|part)(\..*)?$",
     r"^(axes|actuators|drivers|nozzle_tips|heads)\.[^.]+\.(name|notes)$",
     r"^name$",

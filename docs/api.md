@@ -182,6 +182,7 @@ don't know.
 | `machine.disable` | – | `{}` | Actuators to their `on_disable` values, driver disable command (e.g. sleep), motors released |
 | `machine.home` | `axes` (optional list; default all homeable) | `{}` when done | Then `on_home` (e.g. park) |
 | `machine.stop` | `reason` (optional) | `{}` | **Immediate.** Aborts motion and the job, cancels queued requests (they fail with `stopped`), driver stop sequence (e.g. feed hold + soft reset). Machine ends `alarm` or `idle` depending on the driver |
+| `machine.run_macro` | `name` | `{}` when done. Runs a macro from `machine.macros` |
 | `machine.clear_alarm` | – | `{}` | Driver-specific unlock where the controller allows it |
 | `machine.select_tool` | `object` | `{}` | Sets `machine.selected_tool` (shared by all clients) |
 

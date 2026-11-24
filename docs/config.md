@@ -60,6 +60,11 @@ plugins: [pip package names]
 - **Sequences:** `machine.on_enable` and `on_home` are lists of steps, so behaviour is configured, not coded:
   `home`, `park` (safe Z, then the head to `machine.park.location`), `safe_z`, `{actuate: {pump: off, ...}}`,
   `{dwell: 200}` (ms). The loader checks them; `home` inside `on_home` is refused (it would loop).
+- **Macros:** `machine.macros` holds named step lists, run from the Machine page's Macros panel or with
+  `machine.run_macro` (like Klipper macros). Steps: those of the sequences, plus
+  `{move_to: {object: nozzle/N1, location: {x, y, z}, speed?, safe_z?}}` and `{gcode: "M42 P1 S1"}` (or
+  `{gcode: {driver, command}}`). They can be edited while the machine is enabled. Example in
+  `config/examples/simulated-grblhal.yaml`.
 - **Homing:** `controller` axes with `homing: true` have a home switch and are set to their `home` position.
   The default is true for linear axes and false for rotation axes; those keep their position and count as homed
   once the machine homes. Disabling the machine releases the motors, so it must be homed again.

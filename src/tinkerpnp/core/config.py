@@ -52,6 +52,9 @@ class MachineSection(BaseModel):
     park: Park | None = None
     jog: Jog = Field(default_factory=Jog)
     discard_location: Location | None = None
+    macros: dict[str, list[Any]] = Field(default_factory=dict,
+                                         description="Named step lists run on request (machine.run_macro), like "
+                                                     "Klipper macros: the steps of on_enable plus move_to and gcode")
 
 
 @dataclass
@@ -281,10 +284,16 @@ def _check_references(cfg: MachineConfig) -> None:
     if park is not None:
         need("head", park.head, "machine.park.head")
 
-    # sequences: home, park, safe_z, {actuate: {id: value}}, {dwell: ms}
-    for seq in ("on_enable", "on_home"):
-        for i, step in enumerate(getattr(cfg.machine, seq)):
-            where = f"machine.{seq}[{i}]"
+    # sequences: home, park, safe_z, {actuate: {id: value}}, {dwell: ms}; macros also {move_to: ...}, {gcode: ...}
+    sequences = [(f"machine.{seq}", getattr(cfg.machine, seq)) for seq in ("on_enable", "on_home")]
+    sequences += [(f"machine.macros.{name}", steps) for name, steps in cfg.machine.macros.items()]
+    for base, steps in sequences:
+        seq = base.rsplit(".", 1)[-1]
+        if not isinstance(steps, list):
+            problems.append(ConfigProblem(base, "must be a list of steps"))
+            continue
+        for i, step in enumerate(steps):
+            where = f"{base}[{i}]"
             if step in ("home", "park", "safe_z"):
                 if step == "home" and seq == "on_home":
                     problems.append(ConfigProblem(where, "home inside on_home would loop"))
@@ -295,9 +304,20 @@ def _check_references(cfg: MachineConfig) -> None:
                     need("actuator", str(act_id), f"{where}.actuate.{act_id}")
             elif isinstance(step, dict) and list(step) == ["dwell"] and isinstance(step["dwell"], (int, float)):
                 pass
+            elif base.startswith("machine.macros.") and isinstance(step, dict) and list(step) == ["move_to"] \
+                    and isinstance(step["move_to"], dict) and isinstance(step["move_to"].get("location"), dict):
+                obj = str(step["move_to"].get("object", ""))
+                kind, _, oid = obj.partition("/")
+                need(kind, oid, f"{where}.move_to.object") if kind in ("nozzle", "camera", "axis") else \
+                    problems.append(ConfigProblem(f"{where}.move_to.object", "a nozzle/<id>, camera/<id> or axis/<id>"))
+            elif base.startswith("machine.macros.") and isinstance(step, dict) and list(step) == ["gcode"] \
+                    and (isinstance(step["gcode"], str) or isinstance(step["gcode"], dict)):
+                pass
             else:
                 problems.append(ConfigProblem(where, f"unknown step {step!r}; use home, park, safe_z, "
-                                                     "{actuate: {id: value}} or {dwell: ms}"))
+                                                     "{actuate: {id: value}}, {dwell: ms}"
+                                                     + (", {move_to: {object, location}}, {gcode: text}"
+                                                        if base.startswith("machine.macros.") else "")))
 
 
 def _finish(cfg: MachineConfig, strict: bool) -> MachineConfig:

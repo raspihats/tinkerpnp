@@ -179,6 +179,7 @@ class Motion:
             raise MachineError("invalid_params", "safe_z must be auto or none")
         targets = self.targets(obj, location)
         self.check(targets)
+        before = self.location(obj)
 
         head = getattr(obj, "head", None)
         xy = {a: v for a, v in targets.items() if head is not None and a in (head.x, head.y)}
@@ -194,7 +195,8 @@ class Motion:
             self.execute({a: v for a, v in rest.items() if a in z_axes}, speed)
         else:
             self.execute(targets, speed)
-        self.m.motion.update(last_move={"object": obj.name, "location": self.location(obj)})
+        requested = {**{k: v for k, v in before.items()}, **{k: float(v) for k, v in location.items() if v is not None}}
+        self.m.motion.update(last_move={"object": obj.name, "requested": requested, "location": self.location(obj)})
         return self.location(obj)
 
     def jog(self, obj: Any, delta: dict, speed: float = 1.0, safe_z: str | None = None) -> dict:

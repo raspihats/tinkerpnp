@@ -5,12 +5,15 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="text-scale" content="scale" />
 		<script>
-			// theme before first paint: dark unless the viewer chose light (kept in this browser only)
+			// TinkerUI starts dark: on a browser's first visit, record "dark" for mode-watcher before it loads (it would
+			// store "system" first in a client-only app). A choice made with the theme button is kept.
 			try {
-				if (localStorage.getItem('tinkerui.theme') !== 'light') document.documentElement.classList.add('dark');
-			} catch (e) {
-				document.documentElement.classList.add('dark');
-			}
+				if (!localStorage.getItem('mode-watcher-mode')) {
+					const old = localStorage.getItem('tinkerui.theme'); // earlier TinkerUI versions
+					localStorage.setItem('mode-watcher-mode', old === 'light' ? 'light' : 'dark');
+					localStorage.removeItem('tinkerui.theme');
+				}
+			} catch (e) {}
 		</script>
 		%sveltekit.head%
 	</head>

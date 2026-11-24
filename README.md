@@ -57,13 +57,16 @@ Pages:
 
 | Page | What it does |
 |---|---|
-| Machine | Enable / Disable, Home, Park, Safe Z, Clear alarm; a live camera view (click in a head camera's image to move it there); jogging of the selected tool (nozzles and head cameras, shared by all clients) with step, rotation step and speed; absolute moves; actuator switches (amber = unknown, e.g. after a stop); nozzle and axis tables |
+| Machine | Dashboard of panels in 1–3 columns (by screen width): Camera (live view, click-to-move, calibration, thumbnails of the other cameras), Toolhead (position readout with the target of the last move, jog pad, Home/Park/Safe Z, step/rotation/speed, absolute moves), Actuators, Macros (buttons for `machine.macros`), Console, Nozzles, Axes. Drag a panel by its handle to move it, collapse it with its chevron; the layout is remembered in the browser (Reset layout puts it back) |
 | Objects | Every object's live status |
 | Cameras | All camera streams with overlays (crosshair, scale, grid, info), snapshots, reopen, USB camera controls, and a scan of the video devices on the server |
 | Console | G-code console: live log of everything sent and received, command history, grblHAL shortcuts |
 | Configuration | Edit objects (validated, saved with comments kept), history with undo, object types and their fields |
 
 On every page, a **STOP** button in the header (and the **Esc** key) aborts motion while the machine is enabled.
+The bell next to it keeps the messages (failed actions, alarms, machine state, configuration changes); errors also
+pop up briefly. Dark theme by default; the sun/moon button in the sidebar switches (remembered per browser).
+The layout follows Mainsail/Fluidd (dashboard of panels) for machine control.
 Keys on the Machine page (outside input fields): arrows jog X/Y, Page Up/Down jog Z, comma / period rotate,
 Shift = 10 × the step.
 

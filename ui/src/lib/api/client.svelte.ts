@@ -1,3 +1,5 @@
+import { toast } from 'svelte-sonner';
+
 // TinkerPnP API client: JSON-RPC 2.0 over WebSocket (docs/api.md), with automatic reconnect and a reactive
 // status store fed by machine.objects.subscribe. Every component reads machine state from `tinker.status`.
 
@@ -13,6 +15,8 @@ export interface ServerInfo {
 	state: string;
 	warnings: string[];
 }
+
+export type Notification = { id: number; time: number; level: 'error' | 'warn' | 'info' | 'ok'; text: string; name?: string };
 
 export class RpcError extends Error {
 	constructor(
@@ -34,8 +38,10 @@ class TinkerClient {
 	lastError = $state<string | null>(null);
 	/** bumped on every notify_config_changed; pages that show configuration re-load when it changes */
 	configRevision = $state(0);
-	/** the last failed action (shown under the header until dismissed or replaced) */
-	notice = $state<{ text: string; name?: string; time: number } | null>(null);
+	/** message log for the bell: failed actions, machine state changes, configuration changes (newest first) */
+	notifications = $state<Notification[]>([]);
+	unread = $state(0);
+	#nid = 1;
 	/** actions in flight, by method, for busy indicators */
 	busy = $state<Record<string, number>>({});
 
@@ -138,6 +144,15 @@ class TinkerClient {
 			this.configRevision = msg.params?.revision ?? this.configRevision + 1;
 			this.#afterConnect().catch((e) => (this.lastError = String(e)));
 		}
+		if (msg.method === 'notify_machine_state') {
+			const p = msg.params as { state?: string; message?: string | null };
+			if (p.state === 'alarm') this.notify('error', `Machine in alarm${p.message ? `: ${p.message}` : ''}`, 'alarm');
+			else if (p.state === 'disabled' && p.message) this.notify('warn', `Machine disabled: ${p.message}`);
+			else if (p.state) this.notify('info', `Machine ${p.state}${p.message ? `: ${p.message}` : ''}`);
+		} else if (msg.method === 'notify_config_changed') {
+			const p = msg.params as { revision?: number; paths?: string[]; client?: string };
+			this.notify('info', `Configuration revision ${p.revision}: ${(p.paths ?? []).join(', ')}`, p.client);
+		}
 		if (msg.method) {
 			for (const fn of this.#listeners.get(msg.method) ?? []) fn(msg.params ?? {});
 		}
@@ -158,15 +173,26 @@ class TinkerClient {
 		}
 	}
 
-	/** Call a method for a user action: failures become `notice` instead of exceptions. Returns null on failure. */
+	/** Add to the message log; errors and warnings also pop up as a toast. */
+	notify(level: Notification['level'], text: string, name?: string): void {
+		this.notifications.unshift({ id: this.#nid++, time: Date.now(), level, text, name });
+		if (this.notifications.length > 100) this.notifications.length = 100;
+		this.unread++;
+		const description = name ? name : undefined;
+		if (level === 'error') toast.error(text, { description });
+		else if (level === 'warn') toast.warning(text, { description });
+		else if (level === 'ok') toast.success(text, { description });
+	}
+
+	/** Call a method for a user action: failures go to the message log (and a toast) instead of exceptions. Returns null on failure. */
 	async act<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs = 120000): Promise<T | null> {
 		this.busy[method] = (this.busy[method] ?? 0) + 1;
 		try {
 			const r = await this.call<T>(method, params, timeoutMs);
 			return r;
 		} catch (e) {
-			if (e instanceof RpcError) this.notice = { text: e.message, name: e.data?.name, time: Date.now() };
-			else this.notice = { text: `${method}: ${e}`, time: Date.now() };
+			if (e instanceof RpcError) this.notify('error', e.message, e.data?.name);
+			else this.notify('error', `${method}: ${e}`);
 			return null;
 		} finally {
 			this.busy[method] = Math.max(0, (this.busy[method] ?? 1) - 1);

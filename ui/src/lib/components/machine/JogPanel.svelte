@@ -20,7 +20,10 @@
 		RotateCw,
 		LoaderCircle,
 		Move,
-		TriangleAlert
+		TriangleAlert,
+		House,
+		SquareParking,
+		ArrowUpToLine
 	} from '@lucide/svelte';
 
 	let { tools, distances, liftDefault = true }: { tools: string[]; distances: number[]; liftDefault?: boolean } = $props();
@@ -48,6 +51,9 @@
 	const ready = $derived(machine.enabled === true && machine.homed === true && machine.state !== 'alarm');
 	const loc = $derived(((tool && tinker.status[tool]?.location) ?? {}) as { x?: number; y?: number; z?: number; rotation?: number });
 	const moving = $derived(tinker.isBusy('motion.jog', 'motion.move_to'));
+	const lastMove = $derived(tinker.status['motion']?.last_move as { object?: string; requested?: Record<string, number> } | undefined);
+	const requested = $derived(lastMove?.object === tool ? (lastMove?.requested ?? null) : null);
+	const enabled = $derived(machine.enabled === true);
 
 	function jog(delta: Record<string, number>) {
 		if (!tool || !ready || moving) return; // one jog at a time: holding a key doesn't queue up moves
@@ -109,7 +115,7 @@
 		</ToggleGroup.Root>
 	</div>
 
-	<Dro location={loc} />
+	<Dro location={loc} {requested} />
 
 	<div class="flex items-center justify-center gap-6">
 		<!-- X/Y pad -->
@@ -138,6 +144,14 @@
 			<span class="text-xs font-bold text-axis-r">R</span>
 			<Button variant="secondary" class={pad} disabled={!ready} onclick={() => jog({ rotation: -r() })} title="Rotate − (.)"><RotateCw class="size-5" /></Button>
 		</div>
+	</div>
+
+	<div class="grid grid-cols-3 gap-1.5">
+		<Button variant="outline" size="sm" disabled={!enabled || tinker.isBusy('machine.home')} onclick={() => tinker.act('machine.home')}>
+			{#if tinker.isBusy('machine.home')}<LoaderCircle class="animate-spin" />{:else}<House />{/if} Home
+		</Button>
+		<Button variant="outline" size="sm" disabled={!ready} onclick={() => tinker.act('motion.park')}><SquareParking /> Park</Button>
+		<Button variant="outline" size="sm" disabled={!ready} onclick={() => tinker.act('motion.move_to_safe_z')}><ArrowUpToLine /> Safe Z</Button>
 	</div>
 
 	<div class="grid grid-cols-[4.5rem_1fr] items-center gap-x-3 gap-y-2">

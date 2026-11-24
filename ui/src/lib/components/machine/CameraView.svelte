@@ -3,6 +3,7 @@
 	// so that the clicked point comes under the crosshair (like OpenPnP's camera view).
 	import { tinker, fmt, idOf } from '#lib/api/client.svelte.js';
 	import { segmentItem } from '#lib/styles.js';
+	import StreamImg from './StreamImg.svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
 	import { MousePointerClick, Crosshair, Ruler, LocateFixed, Check, X, LoaderCircle, TriangleAlert } from '@lucide/svelte';
@@ -16,7 +17,6 @@
 	const upp = $derived(s.units_per_pixel as { x: number; y: number } | null | undefined);
 	const loc = $derived((s.location ?? {}) as { x?: number; y?: number; z?: number });
 	const movable = $derived(headMounted && s.looking === 'down' && !!upp && tinker.status['machine']?.homed === true);
-	const src = $derived(`/cameras/${id}/stream.mjpg${overlays.length ? `?overlay=${overlays.join(',')}` : ''}`);
 
 	let cursor = $state<{ x: number; y: number } | null>(null);
 
@@ -106,8 +106,9 @@
 <div class="flex flex-col gap-3">
 	<div class="relative overflow-hidden rounded-lg bg-black ring-1 ring-black/10">
 		<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-		<img
-			{src}
+		<StreamImg
+			camera={id}
+			overlay={overlays.join(',')}
 			alt="camera {id}"
 			class="block aspect-[4/3] h-auto w-full object-contain {movable ? 'cursor-crosshair' : ''}"
 			onclick={onClick}

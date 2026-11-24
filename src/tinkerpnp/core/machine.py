@@ -274,8 +274,15 @@ class Machine:
             raise MachineError("not_enabled", "the machine is disabled")
         return act.set(value)
 
+    def run_macro(self, name: str) -> None:
+        macro = self.config.machine.macros.get(name)
+        if macro is None:
+            raise MachineError("not_found", f"no macro {name!r}", what="macro", id=name)
+        self.run_sequence(macro, f"machine.macros.{name}")
+
     def run_sequence(self, steps: list, where: str) -> None:
-        """Steps: home, park, safe_z, {actuate: {id: value, ...}}, {dwell: ms}."""
+        """Steps: home, park, safe_z, {actuate: {id: value, ...}}, {dwell: ms}, and in macros
+        {move_to: {object, location, speed?, safe_z?}} and {gcode: text | {driver, command}}."""
         heads = self.of_kind("head")
         for i, step in enumerate(steps):
             if step == "home":
@@ -295,6 +302,21 @@ class Machine:
             elif isinstance(step, dict) and len(step) == 1 and "dwell" in step:
                 if self.stop_event.wait(float(step["dwell"]) / 1000.0):
                     raise Stopped()
+            elif isinstance(step, dict) and len(step) == 1 and "move_to" in step:
+                m = step["move_to"]
+                self.planner.move_to(self.planner.resolve(m["object"]), m["location"], m.get("speed", 1.0),
+                                     m.get("safe_z", "auto"))
+            elif isinstance(step, dict) and len(step) == 1 and "gcode" in step:
+                g = step["gcode"]
+                command, driver_id = (g, None) if isinstance(g, str) else (g.get("command", ""), g.get("driver"))
+                drivers = [d for d in self.drivers() if hasattr(d, "send")]
+                drv = next((d for d in drivers if d.id == driver_id), None) if driver_id else \
+                    (drivers[0] if len(drivers) == 1 else None)
+                if drv is None:
+                    raise MachineError("invalid_params", f"{where}[{i}]: say which driver (gcode: {{driver, command}})")
+                for line in str(command).split("\n"):
+                    if line.strip():
+                        drv.send(line.strip())
             else:
                 raise MachineError("invalid_params", f"{where}[{i}]: unknown step {step!r}")
 
