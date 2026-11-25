@@ -71,3 +71,28 @@ def test_job_corrects_the_board_from_its_fiducials(api):
     want = board_to_machine(REAL, {"x": 10, "y": 5})
     last = api.app.state.tinker.machine.motion.status()["last_move"]["requested"]
     assert math.hypot(last["x"] - want["x"], last["y"] - want["y"]) < 0.06
+
+
+def test_nozzle_tip_runout_calibration_and_compensation(api):
+    from tinkerpnp.core.calibration import TIP_PIPELINE, _image_to_offset
+    from tinkerpnp.core.vision import run_pipeline
+    m = api.app.state.tinker.machine
+    bottom = m.get("camera", "bottom")
+    bottom.settings.settle = 120
+    bottom.settings.sim_runout = {"N1": {"runout": 0.15, "phase": 30}}
+    api.rpc("machine.enable")
+    r = api.rpc("nozzle.calibrate_tip", nozzle="N1", angles=12)
+    assert r.status_code == 200, r.json()
+    cal = r.json()["result"]
+    assert cal["runout"] == pytest.approx(0.15, abs=0.02) and cal["phase"] == pytest.approx(30, abs=6)
+    assert abs(cal["axis_offset"]["x"]) < 0.03 and cal["residual"] < 0.03 and cal["angles"] == 12
+    assert api.get("/api/nozzle/tip_calibration?nozzle=N1").json()["result"]["runout"] == cal["runout"]
+    # compensated: the tip itself now ends up over the camera centre at any angle
+    for angle in (0, 90, -135):
+        api.rpc("motion.move_to", object="nozzle/N1", location={"x": 189.9, "y": 49.5, "z": 38.0, "rotation": angle})
+        seq, img = bottom.snapshot()
+        det = run_pipeline(img, TIP_PIPELINE, (0.02, 0.02), {"diameter": 0.5})
+        dx, dy = _image_to_offset(det["detections"][0], det["image_size"], (0.02, 0.02))
+        assert math.hypot(dx, dy) < 0.04, (angle, dx, dy)
+    api.rpc("nozzle.reset_tip_calibration", nozzle="N1")
+    assert api.get("/api/nozzle/tip_calibration?nozzle=N1").json()["result"] is None

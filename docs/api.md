@@ -384,6 +384,12 @@ fiducials}` and with `save` stores it as the board's location). A job board with
 before its first placement. Cameras wait `settle` ms after a move before vision takes a picture. Pipelines and
 stages: `src/tinkerpnp/core/vision.py`.
 
+Nozzle tip calibration (2026-11-24): `nozzle.calibrate_tip` (`nozzle`, `camera` = the first machine-mounted
+up-looking camera, `angles` = 12, `bore` = 0.6 mm, `save` = true; returns `{runout, phase, axis_offset, residual,
+angles, points}`), `nozzle.tip_calibration` (read), `nozzle.reset_tip_calibration`. The calibration belongs to the
+nozzle's `tip` and is kept in the data database; while it exists, X/Y moves of that nozzle put the tip (not the
+axis) at the target, for the rotation it will have.
+
 ## 17. G-code console and raw driver access
 
 | Method | Params | Result |

@@ -6,7 +6,7 @@
 	import StreamImg from './StreamImg.svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
-	import { MousePointerClick, Crosshair, Ruler, LocateFixed, Check, X, LoaderCircle, TriangleAlert } from '@lucide/svelte';
+	import { MousePointerClick, Crosshair, Ruler, LocateFixed, Check, X, LoaderCircle, TriangleAlert, RotateCw } from '@lucide/svelte';
 
 	let { id, headMounted = false, tool = null }: { id: string; headMounted?: boolean; tool?: string | null } = $props();
 
@@ -71,6 +71,25 @@
 		});
 		if (r) upp_result = null;
 	}
+
+	type TipCal = { runout: number; phase: number; axis_offset: { x: number; y: number }; residual: number; angles: number; points: number[][] };
+	let tipCal = $state<TipCal | null>(null);
+	const calibrating = $derived(tinker.isBusy('nozzle.calibrate_tip'));
+	async function calibrateTip() {
+		if (!nozzle) return;
+		tipCal = await tinker.act<TipCal>('nozzle.calibrate_tip', { nozzle: idOf(nozzle), camera: id, angles: 12 }, 300000);
+		if (tipCal) tinker.notify('ok', `${idOf(nozzle)} tip runout ${tipCal.runout.toFixed(3)} mm at ${tipCal.phase.toFixed(0)}°, saved`);
+	}
+	// plot: measured tip positions (µm) and the fitted circle
+	const plot = $derived.by(() => {
+		if (!tipCal) return null;
+		const c = tipCal.axis_offset;
+		const pts = tipCal.points.map(([, x, y]) => [x, y]);
+		const span = Math.max(tipCal.runout * 1.4, ...pts.map(([x, y]) => Math.max(Math.abs(x - c.x), Math.abs(y - c.y)) * 1.2), 0.02);
+		const sx = (x: number) => 60 + ((x - c.x) / span) * 52;
+		const sy = (y: number) => 60 - ((y - c.y) / span) * 52;
+		return { pts: pts.map(([x, y]) => [sx(x), sy(y)]), r: (tipCal.runout / span) * 52 };
+	});
 
 	async function saveCapture() {
 		if (!captured) return;
@@ -157,6 +176,10 @@
 				title="With {idOf(nozzle)} centred and in focus: move it 0.5 and 1 mm in X and Y at this height and measure how far the image moves">
 				{#if measuring}<LoaderCircle class="animate-spin" /> Measuring…{:else}<Ruler /> Measure mm/px{/if}
 			</Button>
+			<Button variant="outline" size="sm" disabled={!homed || calibrating} onclick={calibrateTip}
+				title="Turn the empty nozzle over this camera at its focus height and measure the tip's runout (saved, then compensated)">
+				{#if calibrating}<LoaderCircle class="animate-spin" /> Calibrating…{:else}<RotateCw /> Tip runout{/if}
+			</Button>
 		</div>
 		{#if captured}
 			<div class="flex flex-wrap items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-xs">
@@ -183,6 +206,23 @@
 				</span>
 			</div>
 		{/if}
+	{/if}
+	{#if tipCal && plot}
+		<div class="flex items-center gap-4 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-xs">
+			<svg viewBox="0 0 120 120" class="size-24 shrink-0">
+				<line x1="0" y1="60" x2="120" y2="60" class="stroke-border" />
+				<line x1="60" y1="0" x2="60" y2="120" class="stroke-border" />
+				<circle cx="60" cy="60" r={plot.r} class="fill-none stroke-primary" stroke-width="1.5" />
+				{#each plot.pts as [x, y], i (i)}<circle cx={x} cy={y} r="2.5" class="fill-warn" />{/each}
+			</svg>
+			<div class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
+				<span class="text-muted-foreground">Runout</span><span class="num font-semibold">{tipCal.runout.toFixed(3)} mm</span>
+				<span class="text-muted-foreground">Phase</span><span class="num">{tipCal.phase.toFixed(1)}°</span>
+				<span class="text-muted-foreground">Axis vs camera</span><span class="num">X {tipCal.axis_offset.x.toFixed(3)} Y {tipCal.axis_offset.y.toFixed(3)} mm</span>
+				<span class="text-muted-foreground">Fit</span><span class="num">{tipCal.angles} angles, residual {tipCal.residual.toFixed(3)} mm</span>
+			</div>
+			<Button variant="ghost" size="sm" class="ml-auto self-start" onclick={() => (tipCal = null)}><X /></Button>
+		</div>
 	{/if}
 	{#if s.last_error}
 		<p class="flex items-center gap-1.5 text-xs text-alarm"><TriangleAlert class="size-3.5" /> {s.last_error}</p>

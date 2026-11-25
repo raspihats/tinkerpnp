@@ -8,10 +8,12 @@ camera (image x right = +X, image y down = −Y).
 Stages (in the spirit of OpenPnP's CvPipeline, written independently):
   gray                                  colour -> gray
   blur        {mm: 0.1}                 Gaussian blur
-  threshold   {value: 128 | "otsu", invert: false}
+  threshold   {value: 128 | "otsu" | "dark", invert: false}   dark: just above the darkest part (fraction 0.35
+              of the way from the 1st percentile to the median)
   morph       {op: open|close|erode|dilate, mm: 0.1}
   circles     {min_mm, max_mm, sensitivity: 30}            Hough circles -> detections
   blobs       {min_mm2, max_mm2, min_round: 0.6}           contours of the binary image -> detections
+              (or min_factor/max_factor times the area of the expected diameter: 0.5 / 1.8)
   nearest     {}                                           keep the detection nearest to the image centre
 """
 from __future__ import annotations
@@ -53,6 +55,9 @@ def run_pipeline(image: Any, stages: list[dict], upp: tuple[float, float], param
             mode = cv2.THRESH_BINARY_INV if st.get("invert") else cv2.THRESH_BINARY
             if v == "otsu":
                 _, img = cv2.threshold(img, 0, 255, mode | cv2.THRESH_OTSU)
+            elif v == "dark":           # just above the darkest part: a hole (nozzle bore) much darker than all else
+                lo, mid = np.percentile(img, [1, 50])
+                _, img = cv2.threshold(img, float(lo + (mid - lo) * st.get("fraction", 0.35)), 255, mode)
             else:
                 _, img = cv2.threshold(img, float(v), 255, mode)
         elif name == "morph":
@@ -74,8 +79,8 @@ def run_pipeline(image: Any, stages: list[dict], upp: tuple[float, float], param
         elif name == "blobs":
             d = params.get("diameter")
             area = math.pi * (d / 2) ** 2 if d else None
-            min_a = st.get("min_mm2", area * 0.5 if area else 0.05)
-            max_a = st.get("max_mm2", area * 1.8 if area else 50.0)
+            min_a = st.get("min_mm2", area * st.get("min_factor", 0.5) if area else 0.05)
+            max_a = st.get("max_mm2", area * st.get("max_factor", 1.8) if area else 50.0)
             binary = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             contours, _ = cv2.findContours(binary, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
             found = []

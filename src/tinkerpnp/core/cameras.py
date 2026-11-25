@@ -37,6 +37,9 @@ class SimulatedCameraSettings(CameraCommon):
         "auto", description="bed: the machine bed under a down-looking camera (grid, feeders); nozzles: nozzles "
                             "above an up-looking camera; test: a test pattern; auto: by `looking`")
     focus_depth: float = Field(3.0, gt=0, description="Up-looking: mm of Z from `location.z` before nozzles blur")
+    sim_runout: dict[str, dict] = Field(default_factory=dict,
+                                        description="Up-looking: nozzle tip runout to draw, {nozzle id: {runout, "
+                                                    "phase}} (to test tip calibration)")
     sim_fiducials: list[dict] = Field(default_factory=list,
                                       description="Down-looking: round copper marks drawn on the bed, "
                                                   "[{x, y, diameter}] in machine mm (to test fiducial vision)")
@@ -161,7 +164,12 @@ class SimulatedCamera(CameraBase):
         for nozzle in self.machine.of_kind("nozzle"):
             if not isinstance(nozzle, Nozzle):
                 continue
-            loc = nozzle.compute_location()
+            loc = dict(nozzle.compute_location())
+            run = self.settings.sim_runout.get(nozzle.id)
+            if run:                                      # the tip turns around an axis it isn't on
+                a = math.radians((loc.get("rotation") or 0) + run.get("phase", 0))
+                loc["x"] += run["runout"] * math.cos(a)
+                loc["y"] += run["runout"] * math.sin(a)
             cx, cy = self._to_img(loc["x"], loc["y"], cam)
             sprite, alpha = self._nozzle_sprite(nozzle.id, ux)
             size = sprite.shape[0]

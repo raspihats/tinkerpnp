@@ -81,7 +81,7 @@ measurement of units per pixel; web UI dashboard. Differences in behaviour: `ope
 | Pipeline engine (stages: image read, filters, threshold, contours, Hough circles, template match, ...) and editor | *partly*: engine with gray, blur, threshold, morph, circles, blobs, nearest (sizes in mm); more stages and the editor: E5 |
 | Fiducial locator (round fiducials, by footprint), visual homing (homing fiducial) | *partly*: round fiducials (diameter from the fiducial's package pad), iterating onto the mark; visual homing later |
 | Bottom vision: part rotation and offset, pre-rotate, multi-pass, footprint-based | step E2 |
-| Nozzle tip calibration (runout compensation, model by angle) | step E3 |
+| Nozzle tip calibration (runout compensation, model by angle) | **done**: the empty nozzle turns over an up-looking camera (12 angles), circle fit gives runout, phase and the axis position; saved per tip, moves compensated. Bench: N1/NT1 39 µm, fit within 4 µm |
 | Strip feeder hole vision | step E3 |
 | Camera settling (fixed time or motion detection) | *partly*: fixed time (`settle`); motion detection later |
 | Lens calibration (undistort), advanced camera calibration | step E4 |
@@ -118,7 +118,8 @@ measurement of units per pixel; web UI dashboard. Differences in behaviour: `ope
 
 A1, B1, C1, D1 and D2 (with the first part of E1) are done: a KiCad board can be imported, put in a job and placed from strip, tray and auto
 feeders on the simulator (`config/examples/simulated-grblhal.yaml` with `docs/examples/demo.pos`). Dry run on the
-bench done (`../tinkerpnp-bench.md`). Next: E2 (bottom vision), B2 (vacuum sensing), A4 (OpenPnP files).
+bench done (`../tinkerpnp-bench.md`), and E3 (nozzle tip runout) measured on the bench. Next: E2 (bottom vision),
+B2 (vacuum sensing), A4 (OpenPnP files).
 
 ## Order
 

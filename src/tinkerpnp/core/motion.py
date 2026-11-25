@@ -90,6 +90,11 @@ class Motion:
         if unknown:
             raise MachineError("invalid_params", f"{obj.name} has no {', '.join(sorted(unknown))} axis")
         offset = getattr(obj.settings, "offset", None) if not isinstance(obj, AxisBase) else None
+        # nozzle tip runout: put the tip (not the axis) where asked, at the rotation it will have
+        run_dx = run_dy = 0.0
+        if isinstance(obj, Nozzle) and ("x" in location or "y" in location):
+            rot = location.get("rotation")
+            run_dx, run_dy = obj.runout_offset(obj.rotation.position if rot is None else float(rot))
         out: dict[AxisBase, float] = {}
         for coord, value in location.items():
             if value is None:
@@ -99,6 +104,10 @@ class Motion:
             value = float(value)
             if coord in ("x", "y") and offset is not None:
                 value -= getattr(offset, coord) or 0.0
+            if coord == "x":
+                value -= run_dx
+            elif coord == "y":
+                value -= run_dy
             axis, value = raw(axes[coord], value)
             value = normalize_rotation(axis, value)
             if axis in out and abs(out[axis] - value) > axis.tolerance:

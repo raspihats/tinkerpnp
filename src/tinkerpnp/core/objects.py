@@ -331,6 +331,22 @@ class Nozzle(HeadMountable):
     def compute_location(self) -> dict:
         return self.head_location(self.z.position, self.rotation.position)
 
+    def runout(self) -> dict | None:
+        """The loaded tip's calibration (nozzle tip runout), if any: {runout, phase, ...}."""
+        tip = self.settings.tip
+        if not tip:
+            return None
+        return self.machine.state_store.state_get(f"tip_calibration/{tip}")
+
+    def runout_offset(self, rotation: float) -> tuple[float, float]:
+        """Where the tip is relative to the rotation axis at this nozzle rotation (0, 0 if not calibrated)."""
+        import math
+        cal = self.runout()
+        if not cal or not cal.get("enabled", True):
+            return 0.0, 0.0
+        a = math.radians(rotation + cal["phase"])
+        return cal["runout"] * math.cos(a), cal["runout"] * math.sin(a)
+
     def in_safe_zone(self) -> bool | None:
         raw = self.z.input if isinstance(self.z, MappedAxis) else self.z
         zone = raw.status().get("safe_zone")
@@ -563,6 +579,7 @@ class CameraBase(MachineObject):
         frames, t_fps = 0, time.monotonic()
         warm_until = time.monotonic() + self.settings.warmup / 1000.0
         last_decode = 0.0
+        last_ok = time.monotonic()
         try:
             while not self._stop.is_set():
                 # decode only when someone is waiting for a frame, and at most stream_fps times a second:
@@ -582,9 +599,13 @@ class CameraBase(MachineObject):
                     self.update(last_error=str(exc))
                     frame = None
                 if frame is None:
+                    # no frame: say so (a camera that dropped off USB must not look like it's streaming)
+                    if self._status.get("streaming") and time.monotonic() - last_ok > 1.0:
+                        self.update(streaming=False, fps=0.0)
                     if self._stop.wait(0.05):
                         break
                     continue
+                last_ok = time.monotonic()
                 now = time.monotonic()
                 if now - t_fps >= 1.0:                     # fps = frames delivered to viewers
                     self.update(fps=round(frames / (now - t_fps), 1))

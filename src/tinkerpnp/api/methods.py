@@ -579,6 +579,47 @@ def job_reset(ctx: "Connection", job_id: str) -> dict:
     return {}
 
 
+@rpc.method("nozzle.calibrate_tip")
+async def nozzle_calibrate_tip(ctx: "Connection", nozzle: str, camera: str | None = None, angles: int = 12,
+                               bore: float = 0.6, save: bool = True) -> dict:
+    """Measure the loaded tip's runout: the empty nozzle turns over an up-looking camera (at its focus height)."""
+    from ..core.calibration import calibrate_nozzle_tip
+    machine = ctx.app_state.machine
+    n = _nozzle(ctx, nozzle)
+    if not n.settings.tip:
+        raise RpcError("invalid_params", f"{n.name} has no tip set (nozzle setting tip)")
+    if n.status().get("part"):
+        raise RpcError("busy", f"{n.name} holds a part")
+    if camera:
+        cam = machine.objects.get(f"camera/{camera}")
+    else:
+        cam = next((c for c in machine.of_kind("camera") if c.head is None and c.settings.looking == "up"), None)
+    if cam is None:
+        raise RpcError("not_found", "no up-looking camera", what="camera", id=camera)
+    machine.planner.require_ready()
+    cal = await _run(ctx, calibrate_nozzle_tip, machine, n, cam, angles, bore)
+    if save:
+        machine.state_store.state_set(f"tip_calibration/{n.settings.tip}", cal)
+        n.update(calibration={"runout": cal["runout"], "phase": cal["phase"]})
+    return cal
+
+
+@rpc.method("nozzle.tip_calibration", read_only=True)
+def nozzle_tip_calibration(ctx: "Connection", nozzle: str) -> dict | None:
+    """The loaded tip's runout calibration, or null."""
+    return _nozzle(ctx, nozzle).runout()
+
+
+@rpc.method("nozzle.reset_tip_calibration")
+def nozzle_reset_tip_calibration(ctx: "Connection", nozzle: str) -> dict:
+    """Forget the loaded tip's runout calibration (no compensation)."""
+    n = _nozzle(ctx, nozzle)
+    if n.settings.tip:
+        ctx.app_state.machine.state_store.state_set(f"tip_calibration/{n.settings.tip}", None)
+    n.update(calibration=None)
+    return {}
+
+
 # ── import.* ───────────────────────────────────────────────────────────────────────────────────────────────────
 
 @rpc.method("import.kicad_pos")

@@ -126,6 +126,13 @@ delivered to viewers.
 The web UI also limits its connections: a browser opens at most 6 to one server, and every live MJPEG stream holds
 one. Live streams run only while their tab is visible, and thumbnails fetch single snapshots.
 
+## Orientation of up-looking cameras
+
+Vision on up-looking cameras (tip calibration, later bottom vision) expects the image, after the camera's
+`transform`, to show machine +X to the right and +Y up, as seen from above through the nozzle. Up-looking cameras
+usually see a mirror image: "Measure mm/px" reports `mirrored in Y` (or X), and then `transform.flip_y: true` (or
+`flip_x`) puts it right. Both bottom cameras on the bench needed `flip_y`.
+
 ## When the device is open
 
 A camera opens its device when the first viewer arrives: a stream, a snapshot, or later vision. It closes

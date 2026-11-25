@@ -140,3 +140,92 @@ def measure_units_per_pixel(machine: Any, camera: Any, nozzle: Any, distance: fl
             "mirrored_y": bool(yy > 0),
         },
     }
+
+
+# ── nozzle tip runout ──────────────────────────────────────────────────────────────────────────────────────────────
+
+TIP_PIPELINE = [
+    {"stage": "gray"},
+    {"stage": "blur", "mm": 0.03},
+    {"stage": "threshold", "value": "dark", "invert": True},   # the bore: a hole much darker than the tip around it
+    {"stage": "morph", "op": "open", "mm": 0.05},
+    {"stage": "blobs", "min_round": 0.6, "min_factor": 0.1, "max_factor": 6.0},   # bores differ: 0.4 to 1 mm+
+    {"stage": "nearest"},
+]
+
+
+def _image_to_offset(det: dict, size: list[int], upp: tuple[float, float]) -> tuple[float, float]:
+    """Up-looking camera, convention after the transform: image right = +X, image up = +Y."""
+    w, h = size
+    return (det["x"] - w / 2) * upp[0], -(det["y"] - h / 2) * upp[1]
+
+
+def fit_circle(points: list[tuple[float, float]]) -> tuple[float, float, float]:
+    """Least-squares circle (Kåsa): centre x, y and radius."""
+    import numpy as np
+    p = np.array(points, float)
+    a = np.column_stack([2 * p[:, 0], 2 * p[:, 1], np.ones(len(p))])
+    b = (p ** 2).sum(axis=1)
+    (cx, cy, c), *_ = np.linalg.lstsq(a, b, rcond=None)
+    return float(cx), float(cy), float(math.sqrt(max(c + cx * cx + cy * cy, 0.0)))
+
+
+def calibrate_nozzle_tip(machine: Any, nozzle: Any, camera: Any, angles: int = 12, bore: float = 0.6,
+                         settle: float | None = None) -> dict:
+    """On the motion thread: the nozzle turns over an up-looking camera; the bore's track gives the runout.
+    Needs the camera's location (incl. Z = focus) and units_per_pixel. Returns the calibration (not saved)."""
+    from .vision import run_pipeline
+    if camera.settings.looking != "up" or camera.head is not None or camera.settings.location is None:
+        raise MachineError("invalid_params", f"{camera.name}: needs a machine-mounted, up-looking camera with a "
+                                             "location")
+    if camera.settings.units_per_pixel is None:
+        raise MachineError("invalid_params", f"{camera.name}: measure units_per_pixel first")
+    if not 6 <= angles <= 72:
+        raise MachineError("invalid_params", "angles: 6..72")
+    upp = (camera.settings.units_per_pixel.x, camera.settings.units_per_pixel.y)
+    cam = camera.settings.location.as_dict()
+    planner = machine.planner
+    settle_s = (camera.settings.settle if settle is None else settle) / 1000.0
+    # measure the plain axis: switch compensation off while calibrating
+    state_key = f"tip_calibration/{nozzle.settings.tip}" if nozzle.settings.tip else None
+    old = machine.state_store.state_get(state_key) if state_key else None
+    if old:
+        machine.state_store.state_set(state_key, {**old, "enabled": False})
+    points, used = [], []
+    camera.acquire()
+    try:
+        planner.move_to(nozzle, {"x": cam["x"], "y": cam["y"], "rotation": -180.0}, safe_z="auto")
+        if "z" in cam:
+            planner.move_to(nozzle, {"z": cam["z"]}, safe_z="none")
+        for i in range(angles):
+            angle = -180.0 + 360.0 * i / angles
+            planner.move_to(nozzle, {"rotation": angle}, safe_z="none")
+            time.sleep(settle_s)
+            got = camera.wait_frame(camera._seq, 5.0)
+            if got is None:
+                raise MachineError("driver_error", f"{camera.name}: no frame")
+            result = run_pipeline(got[1], TIP_PIPELINE, upp, {"diameter": bore})
+            if not result["detections"]:
+                continue
+            dx, dy = _image_to_offset(result["detections"][0], result["image_size"], upp)
+            points.append((dx, dy))
+            used.append(angle)
+        planner.move_to_safe_z(nozzle.head)
+    finally:
+        camera.release()
+        if old:
+            machine.state_store.state_set(state_key, old)
+    if len(points) < max(5, angles // 2):
+        raise MachineError("vision_failed", f"found the tip in {len(points)} of {angles} pictures; is the nozzle in "
+                                            "focus over the camera, with the bore visible?",
+                           result={"found": len(points)})
+    cx, cy, r = fit_circle(points)
+    # phase: where the tip is (relative to the axis) at rotation 0, as an angle
+    phases = [math.atan2(py - cy, px - cx) - math.radians(a) for (px, py), a in zip(points, used)]
+    phase = math.degrees(math.atan2(sum(math.sin(p) for p in phases), sum(math.cos(p) for p in phases)))
+    residual = max(abs(math.hypot(px - cx, py - cy) - r) for px, py in points)
+    return {"tip": nozzle.settings.tip, "nozzle": nozzle.id, "camera": camera.id, "runout": round(r, 4),
+            "phase": round(phase, 2), "axis_offset": {"x": round(cx, 4), "y": round(cy, 4)},
+            "residual": round(residual, 4), "angles": len(used),
+            "points": [[round(a, 1), round(px, 4), round(py, 4)] for (px, py), a in zip(points, used)],
+            "time": time.time(), "enabled": True}
