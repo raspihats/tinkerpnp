@@ -262,6 +262,10 @@ class Machine:
             if missing:
                 raise MachineError("not_found", f"no controller axis {', '.join(missing)}", what="axis", id=missing[0])
             controller = [known[a] for a in axes]
+        # before homing, while the position is still known (e.g. [safe_z]: the homing cycle may move X/Y first,
+        # with a nozzle down). Skipped when not homed: the position is unknown and grbl refuses moves anyway.
+        if self.config.machine.on_before_home and self.state.status()["homed"]:
+            self.run_sequence(self.config.machine.on_before_home, "machine.on_before_home")
         self._set_state("homing", alarm=None)
         try:
             by_driver: dict[DriverBase, list[ControllerAxis]] = {}
@@ -310,8 +314,8 @@ class Machine:
         heads = self.of_kind("head")
         for i, step in enumerate(steps):
             if step == "home":
-                if where == "machine.on_home":
-                    raise MachineError("invalid_params", f"{where}[{i}]: home inside on_home would loop")
+                if where in ("machine.on_home", "machine.on_before_home"):
+                    raise MachineError("invalid_params", f"{where}[{i}]: home inside {where[8:]} would loop")
                 self.home()
             elif step in ("park", "safe_z"):
                 park = self.config.machine.park

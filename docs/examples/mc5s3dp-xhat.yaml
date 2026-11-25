@@ -15,6 +15,7 @@ include:
 # ── Machine behaviour ────────────────────────────────────────────────────────────────────────────────────────────
 machine:
   on_enable: [home]                  # enable -> driver enable sequence -> home
+  on_before_home: [safe_z]           # homing moves X, then Y, then Z ($44-$46): nozzles up first (if homed)
   on_home: [park]                    # after every homing: park (safe Z first, then X/Y)
   park:
     head: H1

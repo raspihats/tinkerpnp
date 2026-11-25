@@ -6,6 +6,7 @@ name: Simulated MC5S3DP-XHAT
 
 machine:
   on_enable: [home]
+  on_before_home: [safe_z]
   on_home: [park]
   park:
     head: H1

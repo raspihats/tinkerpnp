@@ -414,3 +414,22 @@ def test_jog_with_tip_runout_does_not_drift(m):
     assert end["y"] == pytest.approx(start["y"]) and end["x"] == pytest.approx(start["x"])
     run(m, m.planner.jog, n1, {"y": 0.1})
     assert pos(m, "y") == pytest.approx(y_axis0 + 0.1)
+
+
+def test_before_home_lifts_when_homed(m):
+    """machine.on_before_home ([safe_z] in the examples): homing a homed machine raises the nozzles first; an unhomed
+    machine homes directly (its position is unknown)."""
+    run(m, m.enable)
+    order = []
+    drv = m.get("axis", "x").driver
+    real_home, real_safe = drv.home, m.planner.move_to_safe_z
+    drv.home = lambda axes: (order.append(("home", pos(m, "z"))), real_home(axes))[1]
+    m.planner.move_to_safe_z = lambda head: (order.append(("safe_z", pos(m, "z"))), real_safe(head))[1]
+    run(m, m.planner.move_to, nozzle(m, "N1"), {"z": 38}, 1.0, "none")       # down, e.g. focused over the camera
+    order.clear()
+    run(m, m.home)
+    assert order[0] == ("safe_z", 38) and order[1] == ("home", 57)            # raised to 57 before homing
+    run(m, m.disable)
+    n = len(order)
+    run(m, m.enable)                                                          # on_enable homes from unknown
+    assert order[n][0] == "home"                                             # no lift first (then park lifts)

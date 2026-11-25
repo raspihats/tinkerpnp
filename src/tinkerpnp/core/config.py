@@ -51,6 +51,9 @@ class MachineSection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     on_enable: list[Any] = Field(default_factory=list)
     on_home: list[Any] = Field(default_factory=list)
+    on_before_home: list[Any] = Field(default_factory=list, description="Steps before homing, run only when the "
+                                                                        "machine is homed (position known), e.g. "
+                                                                        "[safe_z]")
     park: Park | None = None
     jog: Jog = Field(default_factory=Jog)
     discard_location: Location | None = None
@@ -294,7 +297,7 @@ def _check_references(cfg: MachineConfig) -> None:
         need("head", park.head, "machine.park.head")
 
     # sequences: home, park, safe_z, {actuate: {id: value}}, {dwell: ms}; macros also {move_to: ...}, {gcode: ...}
-    sequences = [(f"machine.{seq}", getattr(cfg.machine, seq)) for seq in ("on_enable", "on_home")]
+    sequences = [(f"machine.{seq}", getattr(cfg.machine, seq)) for seq in ("on_enable", "on_before_home", "on_home")]
     sequences += [(f"machine.macros.{name}", steps) for name, steps in cfg.machine.macros.items()]
     for base, steps in sequences:
         seq = base.rsplit(".", 1)[-1]
@@ -304,8 +307,8 @@ def _check_references(cfg: MachineConfig) -> None:
         for i, step in enumerate(steps):
             where = f"{base}[{i}]"
             if step in ("home", "park", "safe_z"):
-                if step == "home" and seq == "on_home":
-                    problems.append(ConfigProblem(where, "home inside on_home would loop"))
+                if step == "home" and seq in ("on_home", "on_before_home"):
+                    problems.append(ConfigProblem(where, f"home inside {seq} would loop"))
                 if step == "park" and park is None:
                     problems.append(ConfigProblem(where, "park needs machine.park"))
             elif isinstance(step, dict) and list(step) == ["actuate"] and isinstance(step["actuate"], dict):

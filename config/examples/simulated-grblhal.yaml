@@ -7,6 +7,7 @@ name: MC5S3DP-XHAT (grblHAL simulator)
 
 machine:
   on_enable: [home]
+  on_before_home: [safe_z]         # nozzles up before $H (it homes X and Y before Z), if the position is known
   on_home: [park]
   park:
     head: H1

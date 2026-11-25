@@ -60,9 +60,11 @@ plugins: [pip package names]
   lives in the controller) or `driver` (sent with each move, if the driver has a command for it). The UI shows which.
 - **Device matching for cameras:** a list of selectors tried in order (USB serial, USB vendor:product id, device name, stable
   `/dev/v4l/by-path` or `by-id` paths). USB port paths break when cables move, so they're the last resort.
-- **Sequences:** `machine.on_enable` and `on_home` are lists of steps, so behaviour is configured, not coded:
+- **Sequences:** `machine.on_enable`, `on_before_home` and `on_home` are lists of steps, so behaviour is configured, not coded:
   `home`, `park` (safe Z, then the head to `machine.park.location`), `safe_z`, `{actuate: {pump: off, ...}}`,
-  `{dwell: 200}` (ms). The loader checks them; `home` inside `on_home` is refused (it would loop).
+  `{dwell: 200}` (ms). The loader checks them; `home` inside `on_home` or `on_before_home` is refused (it would loop).
+  `on_before_home` runs only when the machine is homed (the position is known), e.g. `[safe_z]` so that a homing
+  cycle that moves X/Y before Z doesn't drag a lowered nozzle along (OpenPnP leaves this to `HOME_COMMAND`).
 - **Macros:** `machine.macros` holds named step lists, run from the Machine page's Macros panel or with
   `machine.run_macro` (like Klipper macros). Steps: those of the sequences, plus
   `{move_to: {object: nozzle/N1, location: {x, y, z}, speed?, safe_z?}}` and `{gcode: "M42 P1 S1"}` (or
