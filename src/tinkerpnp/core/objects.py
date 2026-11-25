@@ -529,9 +529,10 @@ class CameraBase(MachineObject):
     # ── implemented by camera types ────────────────────────────────────────────────────────────────────────────
     def open_device(self) -> None: ...
 
-    def grab(self, decode: bool = True) -> Any:
+    def grab(self, decode: "bool | Callable[[], bool]" = True) -> Any:
         """Block until the next frame. decode=True: return it (BGR numpy array); decode=False: return SKIPPED (keep
-        the device going without the cost of decoding). None if no frame came (the watchdog decides what then)."""
+        the device going without the cost of decoding). A callable is asked once the frame is there (so a rate limit
+        judges the frame's real arrival time). None if no frame came (the watchdog decides what then)."""
         return None
 
     def close_device(self) -> None: ...
@@ -595,9 +596,15 @@ class CameraBase(MachineObject):
             while not self._stop.is_set():
                 # decode only when someone is waiting for a frame, and at most stream_fps times a second:
                 # a USB camera nobody looks at then costs almost nothing (bench: 3 cameras took 2+ Pi cores)
-                now = time.monotonic()
-                decode = (now >= warm_until and (self._users > 0 or self._waiters > 0)
-                          and now - last_decode >= 1.0 / self.settings.stream_fps)
+                # Decided when the frame is there, not before waiting for it: deciding first skipped the frame that
+                # arrived just in time, so only every 3rd-4th frame was decoded (7.8 instead of 15 fps on the bench).
+                # A little slack, too: at 30 fps camera and 15 fps stream the frame 66.6 ms after the last must count.
+                interval = 1.0 / self.settings.stream_fps
+
+                def decode() -> bool:
+                    t = time.monotonic()
+                    return (t >= warm_until and (self._users > 0 or self._waiters > 0)
+                            and t - last_decode >= interval - min(0.015, interval * 0.25))
                 with self._cond:   # decide and mark stopped under the lock, so acquire() starts a new thread
                     if (self.settings.idle_close > 0 and self._users == 0
                             and time.monotonic() - self._last_use > self.settings.idle_close / 1000):
@@ -699,15 +706,23 @@ class CameraBase(MachineObject):
         return got
 
     # ── encoding and overlays ──────────────────────────────────────────────────────────────────────────────────
-    def jpeg(self, seq: int, frame: Any, overlays: tuple[str, ...] = ()) -> bytes:
+    def jpeg(self, seq: int, frame: Any, overlays: tuple[str, ...] = (), quality: int | None = None,
+             scale: float | None = None) -> bytes:
+        """The frame as JPEG. quality (10-100) and scale (0.1-1, downscale) override the camera's settings, e.g. for a
+        low-bandwidth stream; overlays are drawn at full size first."""
         import cv2
-        key = (seq, overlays)
+        quality = int(min(max(quality or self.settings.jpeg_quality, 10), 100))
+        scale = min(max(scale or 1.0, 0.1), 1.0)
+        key = (seq, overlays, quality, scale)
         cached = self._jpeg.get(key)
         if cached is not None:
             return cached
         if overlays:
             frame = self.draw_overlays(frame.copy(), overlays)
-        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.settings.jpeg_quality])
+        if scale < 1.0:
+            h, w = frame.shape[:2]
+            frame = cv2.resize(frame, (max(1, round(w * scale)), max(1, round(h * scale))), interpolation=cv2.INTER_AREA)
+        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
         data = buf.tobytes()
         with self._cond:
             if seq > self._seq - self.KEEP_FRAMES:

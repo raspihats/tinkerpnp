@@ -4,6 +4,7 @@
 	import { tinker, fmt, idOf } from '#lib/api/client.svelte.js';
 	import { segmentItem } from '#lib/styles.js';
 	import StreamImg from './StreamImg.svelte';
+	import LowBandwidthToggle from './LowBandwidthToggle.svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
 	import { MousePointerClick, Crosshair, Ruler, LocateFixed, Check, X, LoaderCircle, TriangleAlert, RotateCw } from '@lucide/svelte';
@@ -100,13 +101,17 @@
 
 	function toMachine(e: MouseEvent): { x: number; y: number } | null {
 		const img = e.currentTarget as HTMLImageElement;
-		if (!upp || !img.naturalWidth || loc.x === undefined || loc.y === undefined) return null;
+		// units_per_pixel is per camera pixel: use the camera's frame size, not the picture's (a low-bandwidth stream
+		// is downscaled)
+		const w = (s.width as number) || img.naturalWidth;
+		const h = (s.height as number) || img.naturalHeight;
+		if (!upp || !w || loc.x === undefined || loc.y === undefined) return null;
 		const r = img.getBoundingClientRect();
-		const px = ((e.clientX - r.left) / r.width) * img.naturalWidth;
-		const py = ((e.clientY - r.top) / r.height) * img.naturalHeight;
+		const px = ((e.clientX - r.left) / r.width) * w;
+		const py = ((e.clientY - r.top) / r.height) * h;
 		return {
-			x: loc.x + (px - img.naturalWidth / 2) * upp.x,
-			y: loc.y - (py - img.naturalHeight / 2) * upp.y
+			x: loc.x + (px - w / 2) * upp.x,
+			y: loc.y - (py - h / 2) * upp.y
 		};
 	}
 
@@ -156,6 +161,7 @@
 				<ToggleGroup.Item value={o} class="capitalize {segmentItem}">{o}</ToggleGroup.Item>
 			{/each}
 		</ToggleGroup.Root>
+		<LowBandwidthToggle />
 		{#if movable}
 			<span class="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground">
 				<MousePointerClick class="size-3.5" /> Click in the image to move there

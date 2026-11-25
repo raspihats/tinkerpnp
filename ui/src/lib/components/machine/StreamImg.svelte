@@ -5,6 +5,7 @@
 	//   live: MJPEG stream, but only while the tab is visible (a hidden tab gives its connection back)
 	//   poll: one snapshot at a time at `fps` (connections are short), for thumbnails and secondary views
 	import { onMount } from 'svelte';
+	import { streamSettings } from '#lib/stream.svelte.js';
 
 	// a 1x1 transparent GIF: switching an <img> to it is what makes the browser abort a running MJPEG download
 	// (removing the element isn't enough in Chrome)
@@ -33,8 +34,15 @@
 	let visible = $state(true);
 	let polled = $state<string | null>(null);
 
-	const query = $derived(overlay ? `?overlay=${overlay}` : '');
-	const liveSrc = $derived(visible ? `/cameras/${camera}/stream.mjpg${query}` : BLANK);
+	// low bandwidth: the live stream also gets a lower fps; polled snapshots keep their own `fps`
+	function query(live: boolean): string {
+		const p = new URLSearchParams(streamSettings.params());
+		if (!live) p.delete('fps');
+		if (overlay) p.set('overlay', overlay);
+		const q = p.toString();
+		return q ? `?${q}` : '';
+	}
+	const liveSrc = $derived(visible ? `/cameras/${camera}/stream.mjpg${query(true)}` : BLANK);
 
 	onMount(() => {
 		const update = () => (visible = document.visibilityState === 'visible');
@@ -49,7 +57,7 @@
 	// poll mode: fetch a snapshot, show it, wait, repeat (only while visible)
 	$effect(() => {
 		if (mode !== 'poll' || !visible) return;
-		const url = `/cameras/${camera}/snapshot.jpg${query}`;
+		const url = `/cameras/${camera}/snapshot.jpg${query(false)}`;
 		let stopped = false;
 		let last: string | null = null;
 		(async () => {

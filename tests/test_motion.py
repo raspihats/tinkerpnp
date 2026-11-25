@@ -294,6 +294,25 @@ def test_every_error_name_has_a_code():
     assert names and not names - set(ERRORS), sorted(names - set(ERRORS))
 
 
+def test_low_bandwidth_jpeg():
+    """quality and scale make smaller JPEGs (low-bandwidth streams); the default stays full size."""
+    import cv2
+    import numpy as np
+    m = simulated()
+    try:
+        cam = m.get("camera", "top")
+        rng = np.random.default_rng(1)
+        frame = rng.integers(0, 255, (480, 640, 3), dtype=np.uint8)
+        full = cam.jpeg(1, frame)
+        small = cam.jpeg(1, frame, (), 60, 0.5)
+        assert cv2.imdecode(np.frombuffer(full, np.uint8), cv2.IMREAD_COLOR).shape[:2] == (480, 640)
+        assert cv2.imdecode(np.frombuffer(small, np.uint8), cv2.IMREAD_COLOR).shape[:2] == (240, 320)
+        assert len(small) < len(full) / 3
+        assert cam.jpeg(1, frame) == full                              # cached per (quality, scale)
+    finally:
+        m.close()
+
+
 def test_jog_within_tolerance_is_never_silent(m):
     """Without a resolution, a jog inside the axis tolerance (it would not be sent) fails with below_resolution."""
     run(m, m.enable)

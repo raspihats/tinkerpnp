@@ -55,7 +55,7 @@ class SimulatedCamera(CameraBase):
         import cv2  # noqa: F401  (fail early with a clear error if OpenCV is missing)
         self._next = time.monotonic()
 
-    def grab(self, decode: bool = True) -> Any:
+    def grab(self, decode: Any = True) -> Any:
         self._next += 1.0 / self.settings.fps
         delay = self._next - time.monotonic()
         if delay > 0:
@@ -63,7 +63,7 @@ class SimulatedCamera(CameraBase):
                 return None
         else:
             self._next = time.monotonic()
-        if not decode:
+        if not (decode() if callable(decode) else decode):
             return SKIPPED                          # nobody looks: don't draw
         scene = self.settings.scene
         if scene == "auto":
@@ -363,12 +363,14 @@ class V4l2Camera(CameraBase):
         if problems:
             self.update(last_error="; ".join(problems))
 
-    def grab(self, decode: bool = True) -> Any:
+    def grab(self, decode: Any = True) -> Any:
         cap = self._cap
         if cap is None:
             return None
         ok = cap.grab()                               # take the frame from the device (cheap) ...
         frame = None
+        if callable(decode):
+            decode = ok and decode()                  # asked now that the frame is there
         if ok and decode:
             try:
                 ok, frame = cap.retrieve()            # ... and decode it only when needed (expensive)

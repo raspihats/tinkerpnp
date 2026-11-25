@@ -234,7 +234,7 @@ Camera status fields: `looking`, `location`, `streaming`, `viewers`, `fps` (meas
 `units_per_pixel`, `last_error`; `v4l2` adds `device`, `matched_by`, `requested` and `actual` (format).
 
 Streams: `GET /cameras/<id>/stream.mjpg` (multipart MJPEG; `?fps=` to reduce, `?overlay=`, `?frames=N` to stop after
-N frames), `GET /cameras/<id>/snapshot.jpg`, `GET /cameras/<id>/frames/<n>.jpg`. Overlays (`crosshair`, `scale`,
+N frames, `?quality=` and `?scale=` for slow links), `GET /cameras/<id>/snapshot.jpg`, `GET /cameras/<id>/frames/<n>.jpg`. Overlays (`crosshair`, `scale`,
 `grid`, `info`) are drawn server-side so every front end gets them. Details: [`cameras.md`](cameras.md). WebRTC is
 planned; `camera.list` will then add a `webrtc` entry.
 

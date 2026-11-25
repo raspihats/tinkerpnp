@@ -126,6 +126,14 @@ delivered to viewers.
 The web UI also limits its connections: a browser opens at most 6 to one server, and every live MJPEG stream holds
 one. Live streams run only while their tab is visible, and thumbnails fetch single snapshots.
 
+## Slow networks
+
+A full stream of a 1280×960 camera is about 40 kB per frame, 0.6 MB/s at 15 fps. On a slow link (the bench Pi on
+weak WiFi ran at 5.5 Mbit/s) the frames back up in the network buffers and the picture lags by seconds. The
+**Low bandwidth** button next to the overlays (camera view and Cameras page) switches this browser's pictures to
+5 fps, half size and JPEG quality 60 (`?fps=5&scale=0.5&quality=60`, about 1/10 of the data). It's remembered per
+browser. Vision, measurements and clicks in the picture still use full-resolution frames.
+
 ## Orientation of up-looking cameras
 
 Vision on up-looking cameras (tip calibration, later bottom vision) expects the image, after the camera's
@@ -143,8 +151,8 @@ once per overlay combination. The status shows `viewers`, `streaming`, the measu
 
 | URL | Result |
 |---|---|
-| `/cameras/<id>/stream.mjpg` | Live MJPEG (`multipart/x-mixed-replace`); works in an `<img>` tag. `?fps=` (lower rate), `?overlay=`, `?frames=N` (stop after N frames) |
-| `/cameras/<id>/snapshot.jpg` | One new frame. `?overlay=` |
+| `/cameras/<id>/stream.mjpg` | Live MJPEG (`multipart/x-mixed-replace`); works in an `<img>` tag. `?fps=` (lower rate), `?overlay=`, `?frames=N` (stop after N frames), `?quality=` (JPEG 10-100), `?scale=` (0.1-1, downscale) |
+| `/cameras/<id>/snapshot.jpg` | One new frame. `?overlay=`, `?quality=`, `?scale=` |
 | `/cameras/<id>/frames/<n>.jpg` | Frame `n` from `camera.snapshot`; the last 10 frames are kept |
 
 Overlays are drawn on the server, so every front end gets them: `crosshair`, `scale` (a bar of a round length, from

@@ -276,7 +276,8 @@ def create_app(machine: Machine, ui_dir: str | os.PathLike | None = None, data_p
 
     @app.get("/cameras/{camera_id}/stream.mjpg", include_in_schema=False)
     async def camera_stream(camera_id: str, request: Request, fps: float | None = None,
-                            overlay: str | None = None, frames: int | None = None):
+                            overlay: str | None = None, frames: int | None = None, quality: int | None = None,
+                            scale: float | None = None):
         cam, error = camera_or_404(camera_id)
         if error:
             return error
@@ -301,7 +302,7 @@ def create_app(machine: Machine, ui_dir: str | os.PathLike | None = None, data_p
                     if got is None:
                         continue
                     seq, frame = got
-                    data = await asyncio.to_thread(current.jpeg, seq, frame, overlays)
+                    data = await asyncio.to_thread(current.jpeg, seq, frame, overlays, quality, scale)
                     yield (f"--{boundary}\r\nContent-Type: image/jpeg\r\nContent-Length: {len(data)}\r\n\r\n"
                            .encode() + data + b"\r\n")
                     sent += 1
@@ -315,7 +316,8 @@ def create_app(machine: Machine, ui_dir: str | os.PathLike | None = None, data_p
                                  headers=NO_CACHE)
 
     @app.get("/cameras/{camera_id}/snapshot.jpg", include_in_schema=False)
-    async def camera_snapshot(camera_id: str, overlay: str | None = None):
+    async def camera_snapshot(camera_id: str, overlay: str | None = None, quality: int | None = None,
+                              scale: float | None = None):
         cam, error = camera_or_404(camera_id)
         if error:
             return error
@@ -325,7 +327,7 @@ def create_app(machine: Machine, ui_dir: str | os.PathLike | None = None, data_p
         except MachineError as exc:
             err = RpcError(exc.name, exc.message, **exc.data)
             return JSONResponse({"error": err.as_error()}, status_code=err.http_status)
-        data = await asyncio.to_thread(cam.jpeg, seq, frame, parse_overlays(overlay))
+        data = await asyncio.to_thread(cam.jpeg, seq, frame, parse_overlays(overlay), quality, scale)
         return Response(data, media_type="image/jpeg", headers=NO_CACHE)
 
     @app.get("/cameras/{camera_id}/frames/{seq}.jpg", include_in_schema=False)

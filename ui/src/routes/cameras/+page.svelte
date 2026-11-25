@@ -9,6 +9,7 @@
 	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
 	import { segmentItem } from '#lib/styles.js';
 	import StreamImg from '#lib/components/machine/StreamImg.svelte';
+	import LowBandwidthToggle from '#lib/components/machine/LowBandwidthToggle.svelte';
 	import { Camera, RefreshCw, SlidersHorizontal, Aperture, Usb, ScanSearch, Info, TriangleAlert, Save } from '@lucide/svelte';
 
 	type CameraInfo = {
@@ -153,11 +154,14 @@
 						{s.width ?? '–'}×{s.height ?? '–'} · {fmt(s.fps, 0)} fps
 					</span>
 				</div>
-				<ToggleGroup.Root type="multiple" variant="outline" size="sm" bind:value={overlays[c.id]} aria-label="overlays">
-					{#each OVERLAYS as o (o)}
-						<ToggleGroup.Item value={o} class="capitalize {segmentItem}">{o}</ToggleGroup.Item>
-					{/each}
-				</ToggleGroup.Root>
+				<div class="flex flex-wrap items-center gap-2">
+					<ToggleGroup.Root type="multiple" variant="outline" size="sm" bind:value={overlays[c.id]} aria-label="overlays">
+						{#each OVERLAYS as o (o)}
+							<ToggleGroup.Item value={o} class="capitalize {segmentItem}">{o}</ToggleGroup.Item>
+						{/each}
+					</ToggleGroup.Root>
+					<LowBandwidthToggle />
+				</div>
 				<dl class="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-1 text-xs">
 					<dt class="text-muted-foreground">Type</dt><dd>{c.type} · looking {c.looking}{c.head ? ` · on head ${c.head}` : ''}</dd>
 					<dt class="text-muted-foreground">Location</dt>
