@@ -18,7 +18,10 @@ Status: as of phase 1, step 5 (motion core, `gcode` driver, console, cameras, Ma
 |---|---|---|---|
 | Park location | Where the head's **default camera** goes | Where the **head** goes (head X/Y, no offset) | Parking at 0,0 pushed the head past its soft limits on the first machine |
 | Safe Z on moves | Done by the caller (e.g. "move to location at safe Z"); a plain move doesn't lift | Every `move_to` with X/Y travel lifts first, unless `safe_z: none` | Safe by default; API clients can't forget it |
-| Unsafe Z roaming | X/Y moves below safe Z allowed within `unsafe-Z-roaming-distance` | No distance rule. Moves always lift before X/Y travel; jogs can be told not to (`motion.jog` `safe_z: none`, the "Raise Z before X/Y jogs" switch in the UI, off only until the page is reloaded) | Centring a nozzle over the camera needs small X/Y jogs at camera height |
+| Jogs | Straight to the target at the current Z (`JogControlsPanel.jogTool`: `moveTo(..., JogMotion)`) | Same (`machine.jog.safe_z: never`, the default) | – |
+| Board protection | Jog safety, on at every start ("Safety" tab): a jog that puts a nozzle below safe Z within 1 mm + half the tip diameter (half the max part diameter with a part) of an enabled board is refused, unless above the board surface | Same: `motion.jog` `board_protection` (default on), the "Board protection" switch in the UI (on again after a reload), tip `diameter` | – |
+| Unsafe Z roaming | `unsafe-Z-roaming-distance` (10 mm): a tool with a **virtual** Z jogged below safe Z farther than that from where it went below goes back to safe Z | Same: `machine.unsafe_z_roaming_distance` (10 mm), after `motion.jog` / `motion.move_to` | – |
+| Fixed camera roaming radius | Click-to-move on a fixed (up-looking) camera keeps the nozzle's Z within the camera's `roaming-radius` (default 0) | Not yet: click-to-move exists only on head cameras | |
 | Dynamic safe Z | Per nozzle (`enable-dynamic-safe-z`): safe Z accounts for the part height | Not yet | Comes with parts/jobs (phase 5) |
 | Soft-limit check | Per motion command | All targets of a whole move (lift, travel, lower) are checked **before** anything moves | A refused move never half-runs |
 | Rotation limit | `limit-rotation`: angles are normalized into ±180° | Same: `limit_rotation: [-180, 180]` takes angles into the range by whole turns (200° → −160°); a range narrower than one turn is a hard limit | – |
@@ -66,22 +69,38 @@ axes go. Parking always lifts every nozzle on the head to safe Z first (OpenPnP'
 ### Safe Z
 
 Both use the axis **safe zone** (`safe-zone-low` / `safe-zone-high` in OpenPnP, `safe_zone: [low, high]` in
-TinkerPnP), and both lift all nozzles of the head before X/Y travel. On the first machine, OpenPnP raised Z to 57
-before the first X/Y jog, as TinkerPnP does.
+TinkerPnP). An axis without one counts as safe everywhere; a virtual axis is safe at or above its home coordinate.
 
-The difference is where it happens. In OpenPnP, lifting is a step the calling code takes ("move to location at safe
-Z"); a plain move of a head-mountable goes straight there (*not verified for every caller*). In TinkerPnP it's part
-of `motion.move_to` itself, the only way to move. The order is:
+**Moves** the user or a job asks for (move to a location, park, click-to-move on a head camera) lift every nozzle of
+the head into its safe zone before X/Y travel. In OpenPnP that's a step the caller takes
+(`MovableUtils.moveToLocationAtSafeZ`); in TinkerPnP it's part of `motion.move_to`. The order is:
 
 1. every nozzle on the head into its safe zone (on raw axes, so a shared seesaw Z moves once)
 2. X, Y and rotation
 3. the object's own Z, if the target has one
 
-A move without X/Y travel moves all axes together. `safe_z: none` turns lifting off for one move; jogs follow
-`machine.jog.safe_z` (`always` or `never`).
+A move without X/Y travel moves all axes together. `safe_z: none` turns lifting off for one move.
 
-Not supported (yet): OpenPnP's `unsafe-Z-roaming-distance` (small X/Y moves allowed below safe Z) and dynamic safe Z
-(`enable-dynamic-safe-z`, which accounts for the height of the part on the nozzle).
+**Jogs** don't lift, in either (checked in OpenPnP's source, 2026-11-25: `JogControlsPanel.jogTool` calls
+`moveTo(target, JogMotion)`). Two things protect them instead, both as in OpenPnP:
+
+- **Board protection** (`MachineControlsPanel.checkJogMotionSafety`): before the jog, every nozzle of the head is put
+  where it would end up. One that is below its safe zone and within 1 mm + half its tip diameter (half the max part
+  diameter if it holds a larger part; Z lowered by the part height) of an enabled board of the job, and not above
+  the board's surface, refuses the jog. On at every start; the switch in the jog panel turns it off until the next
+  start.
+- **Unsafe Z roaming** (`machineTargetedUserAction`): after a jog or move, a tool below safe Z remembers where it
+  went below. Jogging the same tool farther than `unsafe_z_roaming_distance` (10 mm) from there sends it back to
+  safe Z, but only if its Z axis is **virtual** (a head camera's): a real Z axis is never moved by this.
+
+Earlier notes here said OpenPnP lifted Z to 57 before the first X/Y jog on the first machine. That was most likely
+"park after homed" (Z to safe height after homing), not the jog.
+
+`machine.jog.safe_z: always` is a TinkerPnP option that makes jogs lift like moves; the default `never` is OpenPnP's
+behaviour.
+
+Not supported (yet): dynamic safe Z (`enable-dynamic-safe-z`, which accounts for the height of the part on the
+nozzle) and the fixed camera `roaming-radius`.
 
 ### Soft limits
 

@@ -10,8 +10,6 @@ machine:
   park:
     head: H1
     location: {x: 1, y: 1}
-  jog:
-    safe_z: always
 
 drivers:
   sim:

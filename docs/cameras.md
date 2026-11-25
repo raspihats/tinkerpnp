@@ -94,8 +94,8 @@ Notes:
 Both work while the machine is enabled (calibration values are saved live), from the camera view on the Machine page
 or with `config.capture`:
 
-1. **Location:** centre a nozzle over the camera and bring it into focus (switch off "Raise Z before X/Y jogs" for
-   the fine X/Y steps), then **Set location from N1**. The position is read back from the controller, so Z is
+1. **Location:** centre a nozzle over the camera and bring it into focus (jogs stay at this Z, as in OpenPnP),
+   then **Set location from N1**. The position is read back from the controller, so Z is
    where the axis really is.
 2. **mm per pixel:** with the nozzle still centred and in focus, **Measure mm/px with N1**. The nozzle moves 0.5 and
    1 mm in X, then in Y, at the same height, and the image shift is measured by template matching. Shown before

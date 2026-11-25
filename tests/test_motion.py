@@ -121,7 +121,9 @@ def test_jog_without_lift_keeps_z(m):
     run(m, m.planner.move_to, nozzle(m, "N1"), {"x": 189.9, "y": 49.5, "z": 38})   # down over the camera
     loc = run(m, m.planner.jog, nozzle(m, "N1"), {"x": 0.1, "y": -0.1}, 1.0, "none")
     assert loc["z"] == 38 and loc["x"] == pytest.approx(190.0) and loc["y"] == pytest.approx(49.4)
-    loc = run(m, m.planner.jog, nozzle(m, "N1"), {"x": 1})                         # default: lift first
+    loc = run(m, m.planner.jog, nozzle(m, "N1"), {"x": 1})                  # default as OpenPnP: no lift
+    assert loc["z"] == 38
+    loc = run(m, m.planner.jog, nozzle(m, "N1"), {"x": 1}, 1.0, "auto")      # asked for: lift first
     assert loc["z"] == 57
 
 
@@ -323,3 +325,72 @@ def test_jog_within_tolerance_is_never_silent(m):
     x0 = pos(m, "x")
     m.submit(m.planner.jog, nozzle(m, "N1"), {"x": tol / 2}, 1.0, None, True).result(timeout=10)
     assert pos(m, "x") == pytest.approx(x0 + 2 * tol)
+
+
+BOARD = {"id": "B1", "location": {"x": 100, "y": 100, "z": 10, "rotation": 0}, "dimensions": {"x": 50, "y": 40}}
+
+
+def test_board_protection(m):
+    """As OpenPnP: a jog that would put a nozzle below safe Z over a board (plus 1 mm) is refused; above the board's
+    surface, outside its outline or in the safe zone it is fine."""
+    run(m, m.enable)
+    n1 = nozzle(m, "N1")
+    run(m, m.planner.move_to, n1, {"x": 90, "y": 120, "z": 5})                  # below safe Z, left of the board
+    with pytest.raises(MachineError) as e:
+        m.submit(m.planner.jog, n1, {"x": 10}, 1.0, None, False, [BOARD]).result(timeout=10)    # onto it
+    assert e.value.name == "board_protection" and e.value.data["board"] == "B1"
+    assert pos(m, "x") == 90                                                    # nothing moved
+    m.submit(m.planner.jog, n1, {"x": 8.5}, 1.0, None, False, [BOARD]).result(timeout=10)       # 1.5 mm off: ok
+    m.submit(m.planner.jog, n1, {"z": 10}, 1.0, None, False, [BOARD]).result(timeout=10)        # Z 15 > board 10
+    m.submit(m.planner.jog, n1, {"x": 10}, 1.0, None, False, [BOARD]).result(timeout=10)        # above: ok
+    run(m, m.planner.jog, n1, {"z": -10})                                       # no boards given: no check
+    assert pos(m, "z") == 5
+
+
+def test_rpc_jog_uses_loaded_job_boards():
+    from tinkerpnp.api.methods import _job_boards
+
+    class Runner:
+        job = {"boards": [{"board": "B1", "location": {"x": 1, "y": 2, "z": 3}},
+                          {"board": "B2", "enabled": False}]}
+
+    class Data:
+        @staticmethod
+        def find(collection, item_id):
+            return {"id": item_id, "dimensions": {"x": 50, "y": 40}}
+
+    class State:
+        job, data = Runner(), Data()
+
+    class Ctx:
+        app_state = State()
+
+    assert _job_boards(Ctx()) == [{"id": "B1", "location": {"x": 1, "y": 2, "z": 3}, "dimensions": {"x": 50, "y": 40}}]
+
+
+def test_unsafe_z_roaming_resets_virtual_z(m):
+    """As OpenPnP: a head camera (virtual Z) jogged below its safe Z (its home) farther than
+    unsafe_z_roaming_distance (10 mm) from where it went below gets its Z back to safe Z."""
+    run(m, m.enable)
+    cam = m.get("camera", "top")
+    m.state.update(selected_tool=cam.name)
+    zc = m.planner.axes_of(cam)["z"]
+
+    def jog(delta):
+        run(m, m.planner.jog, cam, delta)
+        m.planner.user_action(cam, jogging=True)
+
+    jog({"z": -2})
+    assert zc.position == -2
+    jog({"x": 6})
+    assert zc.position == -2                    # 6 mm from where it went below
+    jog({"x": 6})
+    assert zc.position == 0                     # 12 mm (incl. Z) > 10: back to safe Z
+    n1 = nozzle(m, "N1")                        # a real Z axis is never reset
+    m.state.update(selected_tool=n1.name)
+    run(m, m.planner.jog, n1, {"z": -20})
+    m.planner.user_action(n1, jogging=True)
+    run(m, m.planner.jog, n1, {"x": 30})
+    m.planner.user_action(n1, jogging=True)
+    assert pos(m, "z") == 37
+

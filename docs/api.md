@@ -112,6 +112,7 @@ to switch on; `message` is human-readable and may change.
 | -32018 | `vision_failed` | 422 | Vision didn't find the target (`data.result` with diagnostics) |
 | -32019 | `feeder_error` | 409 | Feeder couldn't feed (`data.feeder`) |
 | -32020 | `unauthorized` | 401 | Missing/invalid credentials |
+| -32022 | `board_protection` | 409 | Jog refused: a nozzle would go below safe Z over a board (`data.nozzle`, `data.board`) |
 | -32021 | `below_resolution` | 422 | Jog step smaller than one step of the axis (`data.coord`, `data.delta`, `data.min_step`, `data.axis`) |
 | -32030 | `restart_required` | 409 | Change accepted but needs reconnect/restart to apply (informational on `config.update`) |
 | -32099 | `internal_error` | 500 | Bug; `data.trace_id` points into the server log |
@@ -195,7 +196,7 @@ of the design). Methods return when the motion has **finished** (`wait: false` r
 | Method | Params | Result |
 |---|---|---|
 | `motion.move_to` | `object` (head-mountable or `axis/<id>`), `location` (or `position` for axes), `speed` (fraction 0–1 of max, default 1), `safe_z` (`auto` default, `none` to move directly), `wait` | `{"location": {...}}` final location |
-| `motion.jog` | `object`, `delta` (`{x,y,z,rotation}`), `speed`, `safe_z` (`auto`: raise all nozzles before X/Y travel, `none`: stay at this Z, e.g. to centre a nozzle over a camera; default from `machine.jog.safe_z`), `min_step` (default false) | final location. A non-zero step smaller than the axis `resolution` fails with `below_resolution` (data: `coord`, `delta`, `min_step`, `axis`); with `min_step: true` it moves one resolution step instead. The web UI asks with a pop-up |
+| `motion.jog` | `object`, `delta` (`{x,y,z,rotation}`), `speed`, `safe_z` (`auto`: raise all nozzles before X/Y travel, `none`: stay at this Z; default from `machine.jog.safe_z`, which defaults to `never`, as OpenPnP), `min_step` (default false), `board_protection` (default true: refuse a jog that puts a nozzle below safe Z within 1 mm + half its tip diameter of an enabled board of the loaded job, unless above the board surface; fails with `board_protection`) | final location. A non-zero step smaller than the axis `resolution` fails with `below_resolution` (data: `coord`, `delta`, `min_step`, `axis`); with `min_step: true` it moves one resolution step instead. The web UI asks with a pop-up |
 | `motion.jog_cancel` | – | `{}`. **Immediate** |
 | `motion.park` | `head` (default: the only head), `axes` (`xy`, `z`, `all`) | final location |
 | `motion.move_to_safe_z` | `head` | `{}` |
@@ -209,6 +210,10 @@ How motion works (implemented in phase 1, step 1):
   driver wait watches, so the running move ends with `stopped`, and so does every request queued before the stop.
 - `move_to` with X/Y travel and `safe_z: auto`: first every nozzle on the head into its safe zone (a shared seesaw Z
   moves once), then X, Y and rotation, then the object's own Z. Without X/Y travel everything moves together.
+- `motion.move_to` and `motion.jog` are user actions, as in OpenPnP: afterwards unsafe Z roaming applies. A tool with
+  a virtual Z (a head camera) below its safe Z (its home) that was jogged farther than
+  `machine.unsafe_z_roaming_distance` from where it went below gets its virtual Z back to safe Z. Real Z axes are
+  never moved by this.
 - All targets are checked before anything moves: one target outside its soft limits (or `limit_rotation`) refuses
   the whole move with `soft_limit`.
 - Locations are of the object itself: for `nozzle/N2` with offset X 33.2, `x: 100` puts the head at 66.8, and

@@ -186,20 +186,47 @@ async def motion_move_to(ctx: "Connection", object: str, location: dict | None =
         location = {"position": position}
     elif location is None:
         raise RpcError("invalid_params", "missing location")
-    result = await _run(ctx, planner.move_to, obj, location, speed, safe_z, wait=wait)
+    def move_and_note():
+        loc = planner.move_to(obj, location, speed, safe_z)
+        planner.user_action(obj, jogging=False)
+        return loc
+    result = await _run(ctx, move_and_note, wait=wait)
     return {"location": result} if wait else {}
+
+
+def _job_boards(ctx: "Connection") -> list[dict]:
+    """The enabled boards of the loaded job, for board protection: [{id, location, dimensions}]."""
+    runner = ctx.app_state.job
+    if runner is None:
+        return []
+    out = []
+    for jb in runner.job.get("boards", []):
+        if not jb.get("enabled", True):
+            continue
+        board = ctx.app_state.data.find("boards", jb["board"]) or {}
+        out.append({"id": jb["board"], "location": jb.get("location") or {},
+                    "dimensions": board.get("dimensions") or {}})
+    return out
 
 
 @rpc.method("motion.jog")
 async def motion_jog(ctx: "Connection", object: str, delta: dict, speed: float = 1.0,
-                     safe_z: str | None = None, min_step: bool = False) -> dict:
+                     safe_z: str | None = None, min_step: bool = False, board_protection: bool = True) -> dict:
     """Move relative to the current location. safe_z: auto / none; default machine.jog.safe_z. A step below the
-    axis resolution fails with below_resolution; min_step=true makes it one resolution step instead."""
+    axis resolution fails with below_resolution; min_step=true makes it one resolution step instead.
+    board_protection (default on, as OpenPnP): refuse jogs that bring a nozzle below safe Z over a board of the
+    loaded job. Afterwards unsafe Z roaming applies (machine.unsafe_z_roaming_distance)."""
     if safe_z not in (None, "auto", "none"):
         raise RpcError("invalid_params", "safe_z must be auto or none")
     planner = ctx.app_state.machine.planner
     obj = planner.resolve(object)
-    return {"location": await _run(ctx, planner.jog, obj, delta, speed, safe_z, bool(min_step))}
+    boards = _job_boards(ctx) if board_protection else None
+
+    def jog_and_note():
+        loc = planner.jog(obj, delta, speed, safe_z, bool(min_step), boards)
+        planner.user_action(obj, jogging=True)
+        return planner.location(obj)
+    return {"location": await _run(ctx, jog_and_note)}
 
 
 @rpc.method("motion.jog_cancel", immediate=True)

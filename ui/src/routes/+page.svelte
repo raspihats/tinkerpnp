@@ -63,7 +63,6 @@
 	let cameras = $state<CameraInfo[]>([]);
 	let viewCamera = $state<string>('');
 	let distances = $state<number[]>([0.01, 0.1, 1, 10, 100]);
-	let liftDefault = $state(true);
 	let macros = $state<string[]>([]);
 
 	// cameras, jog settings and macros come from the server; reload when the configuration changes
@@ -84,7 +83,6 @@
 			.then((r) => {
 				const jog = r.config?.jog;
 				if (jog?.distances?.length) distances = jog.distances;
-				liftDefault = jog?.safe_z !== 'never';
 				macros = Object.keys(r.config?.macros ?? {});
 			})
 			.catch(() => {});
@@ -224,7 +222,7 @@
 		</DashPanel>
 	{:else if id === 'toolhead'}
 		<DashPanel {id} {dash} title="Toolhead" icon={icons.toolhead}>
-			<JogPanel {tools} {distances} {liftDefault} />
+			<JogPanel {tools} {distances} />
 		</DashPanel>
 	{:else if id === 'actuators'}
 		<DashPanel {id} {dash} title="Actuators" icon={icons.actuators} bodyClass="flex flex-col divide-y">

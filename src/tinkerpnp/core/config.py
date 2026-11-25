@@ -41,7 +41,9 @@ class Park(BaseModel):
 
 class Jog(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    safe_z: Literal["always", "never"] = "always"
+    safe_z: Literal["always", "never"] = Field(
+        "never", description="never (as OpenPnP): jogs move straight there, at the current Z. always: every X/Y jog "
+                             "first raises all nozzles on the head to safe Z")
     distances: list[float] = Field(default_factory=lambda: [0.01, 0.1, 1, 10, 100])
 
 
@@ -52,6 +54,10 @@ class MachineSection(BaseModel):
     park: Park | None = None
     jog: Jog = Field(default_factory=Jog)
     discard_location: Location | None = None
+    unsafe_z_roaming_distance: float = Field(
+        10.0, ge=0, description="mm. As OpenPnP's Unsafe Z Roaming: a tool with a virtual Z (a head camera) that is "
+                                "jogged below its safe Z farther than this from where it went below goes back to "
+                                "safe Z")
     macros: dict[str, list[Any]] = Field(default_factory=dict,
                                          description="Named step lists run on request (machine.run_macro), like "
                                                      "Klipper macros: the steps of on_enable plus move_to and gcode")

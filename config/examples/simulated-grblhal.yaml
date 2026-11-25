@@ -11,8 +11,6 @@ machine:
   park:
     head: H1
     location: {x: 1, y: 1}
-  jog:
-    safe_z: always
   macros:                          # buttons on the Machine page; run with machine.run_macro
     N1 to bottom camera:
       - move_to: {object: nozzle/N1, location: {x: 189.9, y: 49.5, z: 38.0}}

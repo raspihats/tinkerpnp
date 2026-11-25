@@ -11,6 +11,7 @@ Order of a move with X/Y travel and `safe_z: auto`:
 """
 from __future__ import annotations
 
+import logging
 import math
 from typing import TYPE_CHECKING, Any
 
@@ -19,6 +20,8 @@ from .objects import AxisBase, CameraBase, ControllerAxis, HeadMountable, Mapped
 
 if TYPE_CHECKING:
     from .machine import Machine
+
+log = logging.getLogger(__name__)
 
 COORDS = ("x", "y", "z", "rotation")
 
@@ -49,6 +52,7 @@ def normalize_rotation(axis: AxisBase, value: float) -> float:
 class Motion:
     def __init__(self, machine: "Machine"):
         self.m = machine
+        self._last_user_action: tuple[str, dict] | None = None    # unsafe Z roaming: (object, where it went below)
 
     # ── objects and their axes ─────────────────────────────────────────────────────────────────────────────────
     def resolve(self, name: str) -> Any:
@@ -210,11 +214,13 @@ class Motion:
         return self.location(obj)
 
     def jog(self, obj: Any, delta: dict, speed: float = 1.0, safe_z: str | None = None,
-            min_step: bool = False) -> dict:
+            min_step: bool = False, boards: list[dict] | None = None) -> dict:
         """Move relative to the current location. safe_z: auto (lift before X/Y travel), none (stay at this Z, e.g.
         to centre a nozzle over a camera), or None = machine.jog.safe_z from the configuration.
         A non-zero step smaller than the axis `resolution` fails with `below_resolution` (data: coord, delta,
-        min_step); with min_step=True such a step is made one resolution step instead."""
+        min_step); with min_step=True such a step is made one resolution step instead.
+        boards: board protection (OpenPnP's): [{id, location {x, y, z, rotation}, dimensions {x, y}}] of the job; a
+        jog that would bring a nozzle below safe Z over one of them fails with `board_protection`."""
         if not isinstance(delta, dict) or not delta:
             raise MachineError("invalid_params", "delta must be an object with x, y, z and/or rotation")
         current = self.location(obj)
@@ -237,7 +243,94 @@ class Motion:
             location[coord] = current[coord] + math.copysign(step, d)
         if safe_z is None:
             safe_z = "auto" if self.m.config.machine.jog.safe_z == "always" else "none"
+        if boards:
+            self.check_board_protection(obj, self.targets(obj, location), boards)
         return self.move_to(obj, location, speed, safe_z)
+
+    # ── OpenPnP's jog safety (MachineControlsPanel.checkJogMotionSafety / machineTargetedUserAction) ─────────────
+    def _coord(self, axis: AxisBase, raw_values: dict) -> float:
+        """An axis' coordinate if the raw axes were at raw_values (others where they are)."""
+        if isinstance(axis, MappedAxis):
+            return axis.forward(self._coord(axis.input, raw_values))
+        return raw_values.get(axis, axis.position)
+
+    @staticmethod
+    def _in_safe_zone(axis: AxisBase, raw_value: float) -> bool:
+        """As OpenPnP: a controller axis without a safe zone counts as safe; a virtual axis is safe at or above its
+        home coordinate."""
+        if isinstance(axis, VirtualAxis):
+            return raw_value >= float(axis.settings.home) - 1e-6
+        zone = axis.settings.safe_zone if isinstance(axis, ControllerAxis) else None
+        if not zone:
+            return True
+        tol = axis.tolerance
+        return zone[0] - tol <= raw_value <= zone[1] + tol
+
+    def check_board_protection(self, obj: Any, targets: dict[AxisBase, float], boards: list[dict]) -> None:
+        """Refuse a jog that would put a nozzle of the head below its safe Z within its safe distance of a board:
+        1 mm + half the tip diameter (half the max part diameter when it holds a part), Z lowered by the part's
+        height; above the board's surface is fine."""
+        head = getattr(obj, "head", None)
+        if head is None:
+            return
+        for n in self.m.of_kind("nozzle"):
+            if n.head is not head:
+                continue
+            z_raw_axis, _ = raw(n.z, 0.0)
+            if self._in_safe_zone(z_raw_axis, targets.get(z_raw_axis, z_raw_axis.position)):
+                continue
+            off = n.settings.offset
+            x = self._coord(head.x, targets) + (off.x or 0.0)
+            y = self._coord(head.y, targets) + (off.y or 0.0)
+            z = self._coord(n.z, targets)
+            st = n.status()
+            tip = self.m.objects.get(f"nozzle_tip/{n.settings.tip}") if n.settings.tip else None
+            safe = 1.0
+            subject = f"nozzle {n.id}"
+            if tip is not None:
+                diameter = float(tip.settings.diameter or 0.0)
+                max_part = float(tip.settings.max_part_diameter or 0.0)
+                safe += (max_part if st.get("part") and max_part > diameter else diameter) * 0.5
+                subject += f" with {tip.id}"
+            if st.get("part"):
+                z -= float(st.get("part_height") or 0.0)
+                subject += f" holding {st['part']}"
+            for b in boards:
+                loc, dim = b.get("location") or {}, b.get("dimensions") or {}
+                a = math.radians(-(loc.get("rotation") or 0.0))
+                dx, dy = x - (loc.get("x") or 0.0), y - (loc.get("y") or 0.0)
+                lx, ly = dx * math.cos(a) - dy * math.sin(a), dx * math.sin(a) + dy * math.cos(a)
+                lz = z - (loc.get("z") or 0.0)
+                outside = (lx <= -safe or ly <= -safe or lx >= (dim.get("x") or 0.0) + safe
+                           or ly >= (dim.get("y") or 0.0) + safe or lz > 0)
+                if not outside:
+                    raise MachineError("board_protection",
+                                       f"{subject} would potentially crash into board {b.get('id')}. To jog there "
+                                       "anyway, turn off board protection", nozzle=n.id, board=b.get("id"))
+
+    def user_action(self, obj: Any, jogging: bool) -> None:
+        """After a move the user asked for (OpenPnP's machineTargetedUserAction): unsafe Z roaming. A tool with a
+        virtual Z (a head camera) jogged below its safe Z farther than machine.unsafe_z_roaming_distance from
+        where it went below goes back to safe Z (its virtual Z is reset)."""
+        if getattr(obj, "head", None) is None or isinstance(obj, AxisBase):
+            return
+        z_axis = self.axes_of(obj).get("z")
+        if z_axis is None:
+            return
+        base, _ = raw(z_axis, 0.0)
+        here = self.location(obj)
+        selected = self.m.state.status().get("selected_tool")
+        if self._in_safe_zone(base, base.position):
+            self._last_user_action = None
+        elif self._last_user_action is None or selected != obj.name or not jogging:
+            self._last_user_action = (obj.name, here)
+        elif isinstance(base, VirtualAxis):
+            last = self._last_user_action[1]
+            dist = math.sqrt(sum((here.get(k, 0.0) - last.get(k, 0.0)) ** 2 for k in ("x", "y", "z")))
+            if dist > self.m.config.machine.unsafe_z_roaming_distance:
+                log.debug("%s roamed %.2f mm below safe Z: back to safe Z", obj.name, dist)
+                self.m.set_axis_positions({base.id: float(base.settings.home)})
+                self._last_user_action = None
 
     def _below_resolution(self, obj: Any, coord: str, d: float) -> tuple[ControllerAxis, float] | None:
         """(raw axis, minimum step in the coordinate's units) when 0 < |d| < one step of that axis, else None."""

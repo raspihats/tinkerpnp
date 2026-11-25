@@ -50,7 +50,10 @@ plugins: [pip package names]
   one input axis), `cam` (CW/CCW cam), `linear_transform` (combination of several axes) and `virtual` (no hardware)
   are computed. A nozzle on a seesaw Z simply names a `mapped` axis as its Z.
 - **Safe zone** on a Z axis: the range in which every nozzle using it is clear of the work. The motion layer moves
-  into it before any X/Y travel, for jogs too (`machine.jog.safe_z`).
+  into it before X/Y travel of every `move_to`. Jogs don't (as in OpenPnP; `machine.jog.safe_z: always` makes them),
+  but board protection refuses jogs that bring a nozzle below safe Z over a board of the loaded job, and
+  `machine.unsafe_z_roaming_distance` (default 10 mm) sends a head camera's virtual Z back to safe Z after it was
+  jogged that far below it. Nozzle tips have a `diameter` (outer, at the end) for board protection.
 - **Offsets:** head-mounted objects have an `offset` from the head's reference point. Machine position of an
   object = head position + offset. Machine-mounted cameras have a fixed `location` instead.
 - **Acceleration where it applies:** axes can say `acceleration_applies_in: firmware` (informational, the value

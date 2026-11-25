@@ -27,7 +27,7 @@
 		ArrowUpToLine
 	} from '@lucide/svelte';
 
-	let { tools, distances, liftDefault = true }: { tools: string[]; distances: number[]; liftDefault?: boolean } = $props();
+	let { tools, distances }: { tools: string[]; distances: number[] } = $props();
 
 	const ROTATIONS = [0.1, 1, 5, 15, 45, 90];
 	const SPEEDS = [0.1, 0.25, 0.5, 1];
@@ -35,11 +35,9 @@
 	let step = $state('1');
 	let rotStep = $state('5');
 	let speed = $state('0.5');
-	// raise all nozzles to safe Z before X/Y jogs; starts from machine.jog.safe_z and is not remembered on purpose
-	let lift = $state(true);
-	$effect(() => {
-		lift = liftDefault;
-	});
+	// As OpenPnP: jogs move straight there at the current Z (machine.jog.safe_z), and board protection refuses jogs
+	// that would bring a nozzle below safe Z over a board of the loaded job. On at every start, not remembered.
+	let boardProtection = $state(true);
 	let target = $state<{ x: string; y: string; z: string; rotation: string }>({ x: '', y: '', z: '', rotation: '' });
 
 	$effect(() => {
@@ -58,7 +56,7 @@
 
 	function jog(delta: Record<string, number>, minStep = false) {
 		if (!tool || !ready || moving) return; // one jog at a time: holding a key doesn't queue up moves
-		const params = { object: tool, delta, speed: Number(speed), safe_z: lift ? 'auto' : 'none', min_step: minStep };
+		const params = { object: tool, delta, speed: Number(speed), min_step: minStep, board_protection: boardProtection };
 		tinker.act('motion.jog', params, 120000, (e: RpcError) => {
 			if (e.data?.name !== 'below_resolution') return false;
 			// the axis can't move that little (e.g. Z in 0.225 mm motor steps): offer the minimum step instead
@@ -191,12 +189,14 @@
 
 	<div class="flex flex-col gap-1.5">
 		<div class="flex items-center gap-2.5">
-			<Switch id="lift" bind:checked={lift} />
-			<Label for="lift" class="text-sm font-normal">Raise Z before X/Y jogs</Label>
+			<Switch id="board-protection" bind:checked={boardProtection} />
+			<Label for="board-protection" class="text-sm font-normal" title="Refuse jogs that would bring a nozzle below safe Z over a board of the loaded job (as OpenPnP)">
+				Board protection
+			</Label>
 		</div>
-		{#if !lift}
+		{#if !boardProtection}
 			<p class="flex items-center gap-1.5 rounded-md bg-warn/12 px-2.5 py-1.5 text-xs text-warn">
-				<TriangleAlert class="size-3.5 shrink-0" /> X/Y jogs stay at this Z: watch for anything under the nozzles
+				<TriangleAlert class="size-3.5 shrink-0" /> Jogs may lower a nozzle onto a board. Back on at the next start
 			</p>
 		{/if}
 	</div>
@@ -210,7 +210,7 @@
 
 	<p class="text-xs leading-relaxed text-muted-foreground">
 		<kbd class="kbd">←→↑↓</kbd> X/Y · <kbd class="kbd">PgUp</kbd><kbd class="kbd">PgDn</kbd> Z ·
-		<kbd class="kbd">,</kbd><kbd class="kbd">.</kbd> rotate · <kbd class="kbd">Shift</kbd> ×10. Go, Park and click-to-move
-		always raise to safe Z before X/Y travel.
+		<kbd class="kbd">,</kbd><kbd class="kbd">.</kbd> rotate · <kbd class="kbd">Shift</kbd> ×10. Jogs stay at the current Z (as OpenPnP); Go,
+		Park, Home and click-to-move raise to safe Z before X/Y travel.
 	</p>
 </div>

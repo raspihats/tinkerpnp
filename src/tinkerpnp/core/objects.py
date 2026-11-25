@@ -372,6 +372,8 @@ class Nozzle(HeadMountable):
 class NozzleTipSettings(Settings):
     max_part_diameter: Length | None = None
     max_part_height: Length | None = None
+    diameter: Length | None = Field(None, description="Outer diameter of the tip at its end (OpenPnP's "
+                                                       "diameter_low); used by board protection")
 
 
 @registry.register("nozzle_tip", "nozzle_tip", NozzleTipSettings, "Nozzle tip")

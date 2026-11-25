@@ -19,8 +19,7 @@ machine:
   park:
     head: H1
     location: {x: 1, y: 1}           # MACHINE coordinates (not "where the camera goes", unlike OpenPnP)
-  jog:
-    safe_z: always                   # every X/Y jog first raises all nozzles on the head to safe Z
+  jog:                               # jogs stay at the current Z, as in OpenPnP (safe_z: always lifts first)
     distances: [0.01, 0.1, 1, 10, 100]
   discard_location: {x: 10, y: 10, z: 30}   # TODO
 
