@@ -362,7 +362,11 @@ class V4l2Camera(CameraBase):
         ok = cap.grab()                               # take the frame from the device (cheap) ...
         frame = None
         if ok and decode:
-            ok, frame = cap.retrieve()                # ... and decode it only when needed (expensive)
+            try:
+                ok, frame = cap.retrieve()            # ... and decode it only when needed (expensive)
+            except Exception:                         # an empty or broken buffer (the device is going away)
+                ok, frame = False, None
+            ok = ok and frame is not None
         now = time.monotonic()
         if ok:
             self._last_frame = now
