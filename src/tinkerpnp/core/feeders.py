@@ -8,7 +8,7 @@ part's angle as it lies in the feeder (0 = as in its footprint).
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,6 +21,11 @@ from .units import DurationMs, Length
 class FeederCommon(Settings):
     part: str | None = Field(None, description="Part id (from the parts list)")
     enabled: bool = True
+    priority: Literal["high", "normal", "low"] = Field(
+        "normal", description="As OpenPnP: of the feeders with the part, the highest priority is used first (then the "
+                              "nearest)")
+    feed_retry_count: int = Field(3, ge=0, le=10, description="Feeding tried again this often before the feeder is "
+                                                              "taken out of the job (OpenPnP's default 3)")
 
 
 class FeederBase(MachineObject):
@@ -35,15 +40,44 @@ class FeederBase(MachineObject):
     def _key(self) -> str:
         return f"feeder/{self.id}"
 
+    def _state(self) -> dict:
+        return self.machine.state_store.state_get(self._key) or {}
+
     def index(self) -> int:
-        state = self.machine.state_store.state_get(self._key) or {}
-        return int(state.get("index", 0))
+        return int(self._state().get("index", 0))
 
     def set_index(self, index: int) -> None:
+        """Set the counter; also puts a feeder that failed back into service (e.g. after reloading it)."""
         if index < 0:
             raise MachineError("invalid_params", "index must be 0 or more")
         self.machine.state_store.state_set(self._key, {"index": index})
         self.refresh_status()
+
+    def failed(self) -> str | None:
+        """Why the feeder was taken out of service after its feed retries (OpenPnP disables it), or None."""
+        return self._state().get("failed")
+
+    def set_failed(self, reason: str | None) -> None:
+        self.machine.state_store.state_set(self._key, {**self._state(), "failed": reason})
+        self.refresh_status()
+
+    def usable(self) -> bool:
+        return self.settings.enabled and not self.failed()
+
+    def feed_with_retries(self) -> None:
+        """As OpenPnP: feed, retrying feed_retry_count times; when it still fails the feeder is taken out of service
+        (feeder.reset puts it back) and the error is raised. Disabled or empty: no retry."""
+        tries = self.settings.feed_retry_count + 1
+        for attempt in range(tries):
+            try:
+                self.feed()
+                return
+            except MachineError as exc:
+                if exc.name in ("stopped", "feeder_error"):
+                    raise
+                if attempt == tries - 1:
+                    self.set_failed(exc.message)
+                    raise
 
     def refresh_status(self) -> None:
         try:
@@ -51,7 +85,7 @@ class FeederBase(MachineObject):
         except MachineError:
             loc = None
         self.update(enabled=self.settings.enabled, part=self.settings.part, pick_location=loc, index=self.index(),
-                    feeds_left=self.remaining())
+                    feeds_left=self.remaining(), failed=self.failed())
 
     # the feeder interface
     def remaining(self) -> int | None:
@@ -143,7 +177,7 @@ class TrayFeederSettings(FeederCommon):
 
 
 @registry.register("feeder", "tray", TrayFeederSettings, "Tray feeder",
-                   "Parts in a grid (JEDEC tray, waffle pack): row by row, column by column")
+                   "Parts in a grid (JEDEC tray, waffle pack); as OpenPnP, along the shorter side first")
 class TrayFeeder(FeederBase):
     def remaining(self) -> int | None:
         return max(0, self.settings.columns * self.settings.rows - self.index())
@@ -151,7 +185,10 @@ class TrayFeeder(FeederBase):
     def pick_location(self) -> dict:
         s = self.settings
         i = min(self.index(), s.columns * s.rows - 1)
-        row, col = divmod(i, s.columns)
+        if s.columns >= s.rows:      # as OpenPnP: along the shorter side first (here: down a column)
+            col, row = divmod(i, s.rows)
+        else:
+            row, col = divmod(i, s.columns)
         loc = s.first.as_dict()
         loc["x"] = (s.first.x or 0) + col * s.column_step.x + row * s.row_step.x
         loc["y"] = (s.first.y or 0) + col * s.column_step.y + row * s.row_step.y

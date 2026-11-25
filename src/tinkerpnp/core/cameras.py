@@ -44,6 +44,11 @@ class SimulatedCameraSettings(CameraCommon):
                                       description="Down-looking: round copper marks drawn on the bed, "
                                                   "[{x, y, diameter}] in machine mm (to test fiducial vision)")
     noise: float = Field(2.0, ge=0, le=50, description="Sensor noise (standard deviation, 0..255 scale); 0 = none")
+    sim_lens: dict | None = Field(None, description="Draw through a real lens instead of an ideal top view (to "
+                                                    "test advanced calibration): {distance (mm from the focus "
+                                                    "plane), k1, k2, tilt_x, tilt_y (degrees), z (down-looking: the "
+                                                    "focus plane's Z)}. Up-looking: the nozzles, mirrored in Y as a "
+                                                    "real up-looking camera's; down-looking: the fiducials")
 
 
 @registry.register("camera", "simulated", SimulatedCameraSettings, "Simulated camera",
@@ -109,6 +114,15 @@ class SimulatedCamera(CameraBase):
                 cv2.putText(img, f"{gx},{gy}", (px + 3, py - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (160, 210, 160), 1,
                             cv2.LINE_AA)
         for fid in self.settings.sim_fiducials:                  # copper fiducials
+            if self.settings.sim_lens:                           # through the lens, at their height (fid z)
+                projected = self._project_lens({"x": float(fid["x"]), "y": float(fid["y"]), "z": fid.get("z")}, cam)
+                if projected is None:
+                    continue
+                fxf, fyf, scale = projected
+                rr = float(fid.get("diameter", 1.0)) / 2 / (ux * scale)
+                cv2.circle(img, (int(round(fxf * 16)), int(round(fyf * 16))), max(16, int(round(rr * 16))),
+                           (80, 170, 215), -1, cv2.LINE_AA, shift=4)
+                continue
             fx, fy = self._to_img(float(fid["x"]), float(fid["y"]), cam)
             r = max(1, int(round(float(fid.get("diameter", 1.0)) / 2 / ux)))
             cv2.circle(img, (fx, fy), r, (80, 170, 215), -1, cv2.LINE_AA)
@@ -153,6 +167,37 @@ class SimulatedCamera(CameraBase):
         cache[key] = (sprite, alpha)
         return sprite, alpha
 
+    def _project_lens(self, loc: dict, cam: dict) -> tuple[float, float, float] | None:
+        """Where a point shows through the simulated lens (pinhole + radial distortion + tilt), and its scale against
+        the focus plane. Up-looking: the camera is `distance` below location.z, looking up (physical, so mirrored in
+        Y). Down-looking: `distance` above the plane at sim_lens.z (default 0), looking down."""
+        import cv2
+        import numpy as np
+        lens = self.settings.sim_lens or {}
+        d = float(lens.get("distance", 40.0))
+        ux, _ = self._px()
+        w, h = self.settings.width, self.settings.height
+        f = d / ux
+        k = np.array([[f, 0, w / 2], [0, f, h / 2], [0, 0, 1]], np.float64)
+        dist = np.array([lens.get("k1", 0.0), lens.get("k2", 0.0), 0, 0, 0], np.float64)
+        rx, ry = math.radians(lens.get("tilt_x", 0.0)), math.radians(lens.get("tilt_y", 0.0))
+        tilt, _ = cv2.Rodrigues(np.array([rx, ry, 0.0]))
+        if self.settings.looking == "up":
+            r0, z_ref, centre = np.eye(3), cam.get("z", 0.0), np.array([0.0, 0.0, -d])
+        else:
+            r0, z_ref, centre = np.diag([1.0, -1.0, -1.0]), float(lens.get("z", 0.0)), np.array([0.0, 0.0, d])
+        r = tilt @ r0
+        t = -r @ centre
+        z = loc.get("z")
+        rel = np.array([[loc["x"] - cam.get("x", 0), loc["y"] - cam.get("y", 0),
+                         (z_ref if z is None else z) - z_ref]], np.float64)
+        depth = (r @ rel[0] + t)[2]
+        if depth <= 1:
+            return None
+        pts, _ = cv2.projectPoints(rel, cv2.Rodrigues(r)[0], t, k, dist)
+        u, v = pts[0][0]
+        return float(u), float(v), depth / d                    # sub-pixel: drawn with warpAffine / shifted circles
+
     def _nozzles(self) -> Any:
         import cv2
         import numpy as np
@@ -170,8 +215,16 @@ class SimulatedCamera(CameraBase):
                 a = math.radians((loc.get("rotation") or 0) + run.get("phase", 0))
                 loc["x"] += run["runout"] * math.cos(a)
                 loc["y"] += run["runout"] * math.sin(a)
-            cx, cy = self._to_img(loc["x"], loc["y"], cam)
-            sprite, alpha = self._nozzle_sprite(nozzle.id, ux)
+            if self.settings.sim_lens:
+                projected = self._project_lens(loc, cam)
+                if projected is None:
+                    continue
+                cx, cy, scale = projected
+                ux_draw = round(ux * scale, 4)
+            else:
+                cx, cy = self._to_img(loc["x"], loc["y"], cam)
+                ux_draw = ux
+            sprite, alpha = self._nozzle_sprite(nozzle.id, ux_draw)
             size = sprite.shape[0]
             if not (-size < cx < w + size and -size < cy < h + size):
                 continue
@@ -181,7 +234,8 @@ class SimulatedCamera(CameraBase):
             m[1, 2] += cy - size / 2
             layer = cv2.warpAffine(sprite, m, (w, h))
             mask = cv2.warpAffine(alpha, m, (w, h))
-            mx, my = cx + int(1.2 / ux * math.cos(math.radians(angle))), cy - int(1.2 / uy * math.sin(math.radians(angle)))
+            mx = int(round(cx + 1.2 / ux * math.cos(math.radians(angle))))
+            my = int(round(cy - 1.2 / uy * math.sin(math.radians(angle))))
             cv2.circle(layer, (mx, my), max(2, int(0.2 / ux)), (0, 0, 200), -1)      # mark showing rotation
             if focus_z is not None and loc.get("z") is not None:
                 blur = abs(loc["z"] - focus_z) / self.settings.focus_depth
@@ -208,10 +262,10 @@ class SimulatedCamera(CameraBase):
 # ── v4l2 ───────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 class DeviceSelector(BaseModel):
-    """Tried in this order; the first that matches a present device wins."""
+    """Every selector given must fit the same camera; the path decides between cameras that look the same."""
     model_config = ConfigDict(extra="forbid")
     usb_serial: str | None = Field(None, description="USB serial number (survives replugging into another port)")
-    usb_id: str | None = Field(None, description="vendor:product, e.g. 0c45:6340 (the first such camera)")
+    usb_id: str | None = Field(None, description="vendor:product, e.g. 0c45:6340")
     name: str | None = Field(None, description="Device name as the driver reports it, e.g. 'USB 2.0 Camera'")
     path: str | None = Field(None, description="/dev/videoN or a stable /dev/v4l/by-path/... or by-id/... link")
 
@@ -279,26 +333,31 @@ def list_devices() -> list[dict]:
 
 
 def resolve_device(sel: DeviceSelector) -> tuple[str, str]:
-    """(device path, which selector matched)."""
+    """(device path, how it was found). Every selector given must fit the same camera; the path decides between
+    cameras that look the same (two of one model often share a serial number, e.g. Sonix SN0001). If the camera isn't
+    at its path (plugged into another port), a camera that fits the rest is taken only when it is the only one."""
     devices = [d for d in list_devices() if d["capture"]]
-    if sel.usb_serial:
-        for d in devices:
-            if d["usb_serial"] == sel.usb_serial and (not sel.usb_id or d["usb_id"] == sel.usb_id):
-                return d["path"], "usb_serial"
-    if sel.usb_id:
-        for d in devices:
-            if d["usb_id"] == sel.usb_id.lower():
-                return d["path"], "usb_id"
-    if sel.name:
-        for d in devices:
-            if d["name"] == sel.name:
-                return d["path"], "name"
+    ident = {k: v for k, v in (("usb_serial", sel.usb_serial), ("usb_id", sel.usb_id and sel.usb_id.lower()),
+                               ("name", sel.name)) if v}
+    fits = [d for d in devices if all(d[k] == v for k, v in ident.items())]
+    at_path = None
     if sel.path and os.path.exists(sel.path):
-        return os.path.realpath(sel.path) if sel.path.startswith(DEV) else sel.path, "path"
+        at_path = os.path.realpath(sel.path) if sel.path.startswith(DEV) else sel.path
+    if at_path is not None:
+        if not ident:
+            return at_path, "path"
+        if any(d["path"] == at_path for d in fits):
+            return at_path, "path+" + "+".join(ident)
+    if ident and len(fits) == 1:
+        return fits[0]["path"], "+".join(ident) + (" (not at its path)" if sel.path else "")
+    if ident and len(fits) > 1 and not sel.path:
+        return fits[0]["path"], "+".join(ident) + " (first of several)"
     wanted = ", ".join(f"{k}={v}" for k, v in sel.model_dump().items() if v)
-    found = "; ".join(f"{d['path']} {d['usb_id'] or ''} {d['usb_serial'] or ''} {d['name'] or ''}".strip()
-                      for d in devices) or "none"
-    raise MachineError("not_found", f"no camera matches {wanted} (present: {found})", what="camera_device")
+    found = "; ".join(f"{d['path']} {d['usb_id'] or ''} {d['usb_serial'] or ''} {d['name'] or ''} "
+                      f"{' '.join(l for l in d['links'] if '/by-path/' in l)}".strip() for d in devices) or "none"
+    why = (f"{len(fits)} cameras fit {', '.join(ident)} and none is at {sel.path}" if len(fits) > 1
+           else "no camera matches")
+    raise MachineError("not_found", f"{why}: wanted {wanted} (present: {found})", what="camera_device")
 
 
 # OpenCV properties for common V4L2 control names, used when v4l2-ctl isn't installed

@@ -57,6 +57,7 @@ class MachineSection(BaseModel):
     park: Park | None = None
     jog: Jog = Field(default_factory=Jog)
     discard_location: Location | None = None
+    auto_tool_select: bool = Field(True, description="As OpenPnP: the tool the user moves becomes the selected tool")
     unsafe_z_roaming_distance: float = Field(
         10.0, ge=0, description="mm. As OpenPnP's Unsafe Z Roaming: a tool with a virtual Z (a head camera) that is "
                                 "jogged below its safe Z farther than this from where it went below goes back to "
@@ -263,6 +264,8 @@ def _check_references(cfg: MachineConfig) -> None:
         s = o.settings
         if o.kind == "axis" and o.type == "controller":
             need("driver", s.driver, f"{o.path}.driver")
+        if o.kind == "axis" and o.type == "cam":
+            need("axis", s.input, f"{o.path}.input")
         if o.kind == "axis" and o.type == "mapped":
             need("axis", s.input, f"{o.path}.input")
             (i0, _), (i1, _) = s.map
@@ -278,6 +281,8 @@ def _check_references(cfg: MachineConfig) -> None:
             need("axis", s.axes.z, f"{o.path}.axes.z")
             need("axis", s.axes.rotation, f"{o.path}.axes.rotation")
             need("actuator", s.vacuum, f"{o.path}.vacuum", optional=True)
+            need("actuator", s.blow_off, f"{o.path}.blow_off", optional=True)
+            need("actuator", s.vacuum_sense, f"{o.path}.vacuum_sense", optional=True)
             need("nozzle_tip", s.tip, f"{o.path}.tip", optional=True)
             for i, t in enumerate(s.compatible_tips):
                 need("nozzle_tip", t, f"{o.path}.compatible_tips[{i}]")
@@ -287,6 +292,7 @@ def _check_references(cfg: MachineConfig) -> None:
             if s.axes is not None:
                 need("axis", s.axes.z, f"{o.path}.axes.z")
                 need("axis", s.axes.rotation, f"{o.path}.axes.rotation")
+            need("actuator", s.light, f"{o.path}.light", optional=True)
         if o.kind == "feeder" and o.type == "auto":
             need("actuator", s.feed_actuator, f"{o.path}.feed_actuator", optional=True)
             need("actuator", s.post_pick_actuator, f"{o.path}.post_pick_actuator", optional=True)

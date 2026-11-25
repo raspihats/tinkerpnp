@@ -79,6 +79,9 @@ class Placement(BaseModel):
     location: XYR = Field(default_factory=XYR, description="On the board, from its origin (usually lower left)")
     type: Literal["placement", "fiducial"] = "placement"
     enabled: bool = True
+    error_handling: Literal["default", "alert", "defer"] = Field(
+        "default", description="As OpenPnP: default = the job's; alert = pause; defer = retry later, then skip")
+    rank: int = Field(0, description="Placed in rank order (lower first), as OpenPnP's placement rank")
     comments: str | None = None
 
 
@@ -120,6 +123,14 @@ class JobBoard(BaseModel):
 class Job(Item):
     name: str | None = None
     boards: list[JobBoard] = Field(default_factory=list)
+    error_handling: Literal["alert", "defer"] = Field(
+        "alert", description="As OpenPnP: alert = pause on an error (fix it, resume to retry or skip); defer = put the "
+                             "placement back to retry after the others, up to max_placement_retries, then mark it "
+                             "errored and go on")
+    max_placement_retries: int = Field(5, ge=0, le=50, description="Defer: tries again this often (OpenPnP: 5)")
+    order: Literal["nozzle_tips", "part", "part_height", "unsorted"] = Field(
+        "nozzle_tips", description="As OpenPnP's job order: grouped by nozzle tip (default), by part, by part height "
+                                   "(low first) or as in the board; shortest path within a group")
 
 
 MODELS: dict[str, type[Item]] = {"parts": Part, "packages": Package, "boards": Board, "jobs": Job}

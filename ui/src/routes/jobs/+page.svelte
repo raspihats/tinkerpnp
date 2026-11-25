@@ -14,7 +14,10 @@
 	import { Play, Pause, StepForward, Square, SkipForward, RotateCcw, Upload, Plus, Trash2, Crosshair, ListChecks, Save, FlaskConical, Check, ScanSearch, LoaderCircle } from '@lucide/svelte';
 
 	type JobBoard = { board: string; location: { x: number; y: number; z: number; rotation: number }; side: string; enabled: boolean; check_fiducials: boolean; placed: string[] };
-	type Job = { id: string; name?: string; boards: JobBoard[]; revision: number };
+	type Job = {
+		id: string; name?: string; boards: JobBoard[]; revision: number;
+		order?: string; error_handling?: string; max_placement_retries?: number;
+	};
 	type PlanStep = { board: string; placement: string; part: string | null; location: { x: number; y: number; rotation: number }; done: boolean };
 
 	let jobs = $state<Job[]>([]);
@@ -86,7 +89,7 @@
 
 	async function save() {
 		if (!draft) return;
-		const r = await tinker.act<Job>('data.jobs.update', { id: draft.id, revision: draft.revision, changes: { name: draft.name, boards: draft.boards } });
+		const r = await tinker.act<Job>('data.jobs.update', { id: draft.id, revision: draft.revision, changes: { name: draft.name, boards: draft.boards, order: draft.order ?? 'nozzle_tips', error_handling: draft.error_handling ?? 'alert', max_placement_retries: draft.max_placement_retries ?? 5 } });
 		if (r) {
 			dirty = false;
 			tinker.notify('ok', `Job ${draft.id} saved`);
@@ -238,6 +241,28 @@
 					</Card.Action>
 				</Card.Header>
 				<Card.Content>
+					<!-- as OpenPnP's job settings -->
+					<div class="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+						<label class="flex items-center gap-1.5">Order
+							<select class="h-8 rounded-md border border-input bg-background px-2 text-xs" value={draft.order ?? 'nozzle_tips'} onchange={(e) => { draft!.order = e.currentTarget.value; dirty = true; }}>
+								<option value="nozzle_tips">By nozzle tip (OpenPnP's default)</option>
+								<option value="part">By part</option>
+								<option value="part_height">By part height, low first</option>
+								<option value="unsorted">As in the board</option>
+							</select>
+						</label>
+						<label class="flex items-center gap-1.5">On an error
+							<select class="h-8 rounded-md border border-input bg-background px-2 text-xs" value={draft.error_handling ?? 'alert'} onchange={(e) => { draft!.error_handling = e.currentTarget.value; dirty = true; }}>
+								<option value="alert">Pause (Alert)</option>
+								<option value="defer">Retry later, then skip (Defer)</option>
+							</select>
+						</label>
+						{#if (draft.error_handling ?? 'alert') === 'defer'}
+							<label class="flex items-center gap-1.5">Retries
+								<Input type="number" min="0" max="50" class="h-8 w-16 font-mono text-xs" value={draft.max_placement_retries ?? 5} oninput={(e) => { draft!.max_placement_retries = Number(e.currentTarget.value); dirty = true; }} />
+							</label>
+						{/if}
+					</div>
 					{#if draft.boards.length}
 						<Table.Root>
 							<Table.Header>

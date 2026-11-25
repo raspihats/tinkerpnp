@@ -16,7 +16,7 @@ from .config import MachineConfig
 from .errors import MachineError, Stopped
 from .motion import Motion
 from .objects import (ActuatorBase, AxisBase, CameraBase, ControllerAxis, DriverBase, Head, MachineObject, MappedAxis,
-                      Nozzle, Settings)
+                      Nozzle, Settings, VirtualAxis)
 from .registry import Registry, registry as default_registry
 
 log = logging.getLogger("tinkerpnp.machine")
@@ -68,7 +68,8 @@ class Machine:
         first_nozzle = next((o.id for o in config.objects if o.kind == "nozzle"), None)
         self.state = Singleton("machine", self, state="disabled", enabled=False, homed=False, alarm=None,
                                message=None, selected_tool=f"nozzle/{first_nozzle}" if first_nozzle else None)
-        self.motion = Singleton("motion", self, moving=False, last_move=None, safe_z=None, queue_length=0)
+        # speed: OpenPnP's global speed slider, a factor on every move (jogs, Go, jobs, ...)
+        self.motion = Singleton("motion", self, moving=False, last_move=None, safe_z=None, queue_length=0, speed=1.0)
         self.job = Singleton("job", self, state="none", job_id=None, name=None,
                              progress={"done": 0, "total": 0}, current_placement=None, elapsed=0.0, message=None)
         for s in (self.state, self.motion, self.job):
@@ -96,7 +97,7 @@ class Machine:
     def close(self) -> None:
         """Close driver links, cameras and the worker thread (machine replaced or server stopping). Motion is stopped
         only if something is moving: the stop sequence (e.g. grbl's soft reset) shouldn't hit an idle machine."""
-        if self.motion.status().get("moving") or self._queued:
+        if self.busy():
             self.stop("shutting down")
         else:
             self._stop_generation += 1
@@ -149,6 +150,17 @@ class Machine:
         self._update_homed()
         if self.state.status()["enabled"]:
             self._set_state("alarm", message=f"{driver.id}: {line}", alarm=alarm)
+
+    def set_speed(self, speed: float) -> float:
+        """The global speed factor (OpenPnP's speed slider): 0.01..1, applies to every move. Any thread."""
+        if not isinstance(speed, (int, float)) or isinstance(speed, bool) or not 0.01 <= speed <= 1:
+            raise MachineError("invalid_params", "speed is a fraction: 0.01..1")
+        self.motion.update(speed=round(float(speed), 3))
+        return self.motion.status()["speed"]
+
+    def busy(self) -> bool:
+        """Something is moving or waiting on the motion thread."""
+        return bool(self.motion.status().get("moving") or self._queued)
 
     # ── running requests on the motion thread ──────────────────────────────────────────────────────────────────
     def submit(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> concurrent.futures.Future:
@@ -214,13 +226,6 @@ class Machine:
             for driver in self.drivers():
                 driver.connect()
                 driver.enable()
-            self.state.update(enabled=True, alarm=None)
-            self._set_state("idle")
-            self.run_sequence(self.config.machine.on_enable, "machine.on_enable")
-            # after the sequence: controllers like grbl refuse G-code (M5, M65, ...) until they're homed
-            for act in self.of_kind("actuator"):
-                if act.settings.on_enable is not None:
-                    act.set(act.settings.on_enable)
         except Exception as exc:
             message = exc.message if isinstance(exc, MachineError) else str(exc)
             try:
@@ -229,9 +234,34 @@ class Machine:
                 log.exception("disable after a failed enable")
             self._set_state("disabled", message=f"enable failed: {message}")
             raise
+        self.state.update(enabled=True, alarm=None)
+        self._set_state("idle")
+        # as OpenPnP's default enabled-actuation (AssumeUnknown): what an output was before is not trusted any more
+        for act in self.of_kind("actuator"):
+            if act.settings.on_enable is None:
+                act.update(value=None)
+        # As OpenPnP: once the drivers are enabled the machine stays enabled, even if homing (or another step) then
+        # fails: the operator can jog it off a stuck switch or fix the cause and home again.
+        try:
+            self.run_sequence(self.config.machine.on_enable, "machine.on_enable")
+        finally:
+            # after the sequence: controllers like grbl refuse G-code (M5, M65, ...) until they're homed
+            for act in self.of_kind("actuator"):
+                if act.settings.on_enable is not None:
+                    try:
+                        act.set(act.settings.on_enable)
+                    except Exception:
+                        log.exception("%s: on_enable", act.name)
 
     def disable(self) -> None:
         errors = []
+        if self.state.status()["enabled"]:
+            from .pnp import pump_off
+            for head in self.of_kind("head"):          # as OpenPnP: the pump goes off on disable, in every mode
+                try:
+                    pump_off(self, head)
+                except Exception as exc:
+                    errors.append(f"{head.name} pump: {exc}")
         for act in self.of_kind("actuator"):
             if act.settings.on_disable is not None and self.state.status()["enabled"]:
                 try:
@@ -266,6 +296,11 @@ class Machine:
         # with a nozzle down). Skipped when not homed: the position is unknown and grbl refuses moves anyway.
         if self.config.machine.on_before_home and self.state.status()["homed"]:
             self.run_sequence(self.config.machine.on_before_home, "machine.on_before_home")
+        # as OpenPnP: unhomed first, so a failed (re-)home leaves the machine unhomed
+        for a in controller:
+            if a.homeable:
+                a.update(homed=False)
+        self._update_homed()
         self._set_state("homing", alarm=None)
         try:
             by_driver: dict[DriverBase, list[ControllerAxis]] = {}
@@ -277,13 +312,42 @@ class Machine:
             for a in controller:
                 if not a.homeable:          # no switch: keeps its position, counts as homed
                     a.update(homed=True)
+            # as OpenPnP: virtual axes (a head camera's Z) go back to their home position
+            if axes is None:
+                self.set_axis_positions({a.id: a.settings.home for a in self.of_kind("axis")
+                                         if isinstance(a, VirtualAxis)})
             self._refresh_dependents()
         finally:
             self._update_homed()
             if self.state.status()["state"] == "homing":
                 self._set_state("idle")
         if self.state.status()["homed"]:
+            self._recalibrate_tips_after_home()
             self.run_sequence(self.config.machine.on_home, "machine.on_home")
+
+    def _recalibrate_tips_after_home(self) -> None:
+        """As OpenPnP's nozzle tip recalibration on MachineHome: tips with calibration enabled and
+        recalibrate: machine_home are measured again (empty nozzles only). A failure is reported, homing stands."""
+        from .calibration import calibrate_nozzle_tip
+        camera = next((c for c in self.of_kind("camera") if c.head is None and c.settings.looking == "up"), None)
+        for n in self.of_kind("nozzle"):
+            tip = self.objects.get(f"nozzle_tip/{n.tip_id()}") if n.tip_id() else None
+            if tip is None or not tip.settings.calibration.enabled or n.status().get("part"):
+                continue
+            if tip.settings.calibration.recalibrate != "machine_home":
+                continue
+            try:
+                if camera is None:
+                    raise MachineError("not_found", "no up-looking camera on the machine")
+                cal = calibrate_nozzle_tip(self, n, camera)
+                self.state_store.state_set(n.calibration_key(), cal)
+                n.update(calibration={"runout": cal["runout"], "phase": cal["phase"]})
+            except Exception as exc:
+                message = exc.message if isinstance(exc, MachineError) else str(exc)
+                log.warning("tip calibration of %s after homing: %s", n.name, message)
+                self.emit("notify_machine_event", {"type": "warning",
+                                                    "message": f"{n.name}: tip calibration after homing failed: "
+                                                               f"{message}"})
 
     def clear_alarm(self) -> None:
         for driver in self.drivers():

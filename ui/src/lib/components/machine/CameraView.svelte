@@ -1,6 +1,6 @@
 <script lang="ts">
-	// Live view of one camera. On a head-mounted, down-looking camera with units_per_pixel, a click moves the camera
-	// so that the clicked point comes under the crosshair (like OpenPnP's camera view).
+	// Live view of one camera. On a head-mounted, down-looking camera with units_per_pixel, Shift+click moves the
+	// camera so that the clicked point comes under the crosshair (as OpenPnP's camera view; a plain click does nothing).
 	import { tinker, fmt, idOf } from '#lib/api/client.svelte.js';
 	import { segmentItem } from '#lib/styles.js';
 	import StreamImg from './StreamImg.svelte';
@@ -17,7 +17,13 @@
 	const s = $derived(tinker.status[`camera/${id}`] ?? {});
 	const upp = $derived(s.units_per_pixel as { x: number; y: number } | null | undefined);
 	const loc = $derived((s.location ?? {}) as { x?: number; y?: number; z?: number });
-	const movable = $derived(headMounted && s.looking === 'down' && !!upp && tinker.status['machine']?.homed === true);
+	// Shift+click centres what was clicked (as OpenPnP): a head camera moves there; on an up-looking machine camera
+	// the selected nozzle moves (needs a nozzle selected)
+	const movable = $derived(
+		!!upp &&
+			tinker.status['machine']?.homed === true &&
+			((headMounted && s.looking === 'down') || (!headMounted && s.looking === 'up' && !!tool?.startsWith('nozzle/')))
+	);
 
 	let cursor = $state<{ x: number; y: number } | null>(null);
 
@@ -80,6 +86,8 @@
 		if (!nozzle) return;
 		tipCal = await tinker.act<TipCal>('nozzle.calibrate_tip', { nozzle: idOf(nozzle), camera: id, angles: 12 }, 300000);
 		if (tipCal) tinker.notify('ok', `${idOf(nozzle)} tip runout ${tipCal.runout.toFixed(3)} mm at ${tipCal.phase.toFixed(0)}°, saved`);
+		if (tipCal && !(tipCal as TipCal & { compensated?: boolean }).compensated)
+			tinker.notify('warn', `Not compensated yet: as in OpenPnP, turn on calibration for the tip (Config → Nozzle tips → Calibration → Enabled)`);
 	}
 	// plot: measured tip positions (µm) and the fitted circle
 	const plot = $derived.by(() => {
@@ -120,9 +128,10 @@
 	}
 
 	function onClick(e: MouseEvent) {
-		if (!movable) return;
+		// as OpenPnP: Shift+click moves; a plain click does nothing (a stray click mustn't move the head)
+		if (!movable || !e.shiftKey) return;
 		const target = toMachine(e);
-		if (target) tinker.act('motion.move_to', { object: `camera/${id}`, location: target });
+		if (target) tinker.act('camera.center_on', { camera: id, x: target.x, y: target.y, nozzle: headMounted ? null : tool });
 	}
 
 </script>
@@ -150,7 +159,7 @@
 		</div>
 		{#if cursor}
 			<span class="num pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded bg-primary px-2 py-0.5 text-[11px] font-semibold text-primary-foreground">
-				{movable ? 'click → ' : ''}X {fmt(cursor.x, 2)} Y {fmt(cursor.y, 2)}
+				{movable ? 'Shift+click → ' : ''}X {fmt(cursor.x, 2)} Y {fmt(cursor.y, 2)}
 			</span>
 		{/if}
 	</div>
@@ -179,7 +188,7 @@
 				<Crosshair /> Set location
 			</Button>
 			<Button variant="outline" size="sm" disabled={!homed || measuring} onclick={measureUpp}
-				title="With {idOf(nozzle)} centred and in focus: move it 0.5 and 1 mm in X and Y at this height and measure how far the image moves">
+				title="Move {idOf(nozzle)} to this camera's location (safe Z, then down to its focus Z), then 0.5 and 1 mm in X and Y, and measure how far the image moves">
 				{#if measuring}<LoaderCircle class="animate-spin" /> Measuring…{:else}<Ruler /> Measure mm/px{/if}
 			</Button>
 			<Button variant="outline" size="sm" disabled={!homed || calibrating} onclick={calibrateTip}
@@ -205,7 +214,7 @@
 				<span class="font-medium">Measured</span>
 				<span class="num">{fmt(upp?.x, 5)} × {fmt(upp?.y, 5)} → <b>{upp_result.value.x.toFixed(5)} × {upp_result.value.y.toFixed(5)}</b> mm/px</span>
 				<span class="text-muted-foreground">view {d.field_of_view_mm[0]} × {d.field_of_view_mm[1]} mm · rotated {d.rotation_deg}°</span>
-				{#if d.mirrored_x || d.mirrored_y}<span class="text-warn">mirrored in {d.mirrored_x ? 'X' : ''}{d.mirrored_y ? 'Y' : ''}</span>{/if}
+				{#if d.mirrored_x || d.mirrored_y}<span class="text-warn">mirrored in {d.mirrored_x ? 'X' : ''}{d.mirrored_y ? 'Y' : ''}: set {[d.mirrored_y ? 'flip X (vertical)' : '', d.mirrored_x ? 'flip Y (horizontal)' : ''].filter(Boolean).join(' and ')}</span>{/if}
 				<span class="ml-auto flex gap-1">
 					<Button size="sm" onclick={saveUpp}><Check /> Save</Button>
 					<Button variant="ghost" size="sm" onclick={() => (upp_result = null)}><X /> Cancel</Button>

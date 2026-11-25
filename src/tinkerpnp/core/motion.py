@@ -35,18 +35,18 @@ def raw(axis: AxisBase, value: float) -> tuple[AxisBase, float]:
 
 
 def normalize_rotation(axis: AxisBase, value: float) -> float:
-    """Rotation axes with limit_rotation (e.g. [-180, 180]) take angles into that range by whole turns, as OpenPnP's
-    "limit rotation" does: 200 -> -160. A range narrower than one turn is a hard limit (checked later)."""
+    """As OpenPnP's "limit rotation": a rotation axis with limit_rotation (e.g. [-180, 180]) takes the angle by whole
+    turns into that range: 200 -> -160; also into a narrower range when a whole-turn equivalent fits ([-90, 90]:
+    270 -> -90). If none fits, the nearest is kept and the limit check refuses it."""
     if not isinstance(axis, ControllerAxis) or axis.axis_kind != "rotation" or not axis.settings.limit_rotation:
         return value
     low, high = axis.settings.limit_rotation
-    if high - low < 360 - 1e-9:
-        return value
-    while value > high + 1e-9:
-        value -= 360.0
-    while value < low - 1e-9:
-        value += 360.0
-    return value
+    k0 = math.floor((value - low) / 360.0)
+    candidates = [value - 360.0 * k for k in (k0 - 1, k0, k0 + 1)]
+    inside = [c for c in candidates if low - 1e-9 <= c <= high + 1e-9]
+    if inside:
+        return min(inside, key=lambda c: abs(c - value))
+    return min(candidates, key=lambda c: max(low - c, c - high))
 
 
 class Motion:
@@ -81,9 +81,12 @@ class Motion:
         if isinstance(obj, AxisBase):
             return {"position": obj.position}
         loc = dict(obj.compute_location() or {})
+        offset = getattr(obj.settings, "offset", None)
         for coord, axis in self.axes_of(obj).items():
             if coord in ("z", "rotation"):
                 loc[coord] = axis.position
+        if "z" in loc and offset is not None and offset.z:
+            loc["z"] += offset.z
         return loc
 
     def targets(self, obj: Any, location: dict) -> dict[AxisBase, float]:
@@ -107,7 +110,7 @@ class Motion:
             if not isinstance(value, (int, float)) or isinstance(value, bool):
                 raise MachineError("invalid_params", f"{coord} must be a number")
             value = float(value)
-            if coord in ("x", "y") and offset is not None:
+            if coord in ("x", "y", "z") and offset is not None:     # as OpenPnP: X, Y and Z (not rotation)
                 value -= getattr(offset, coord) or 0.0
             if coord == "x":
                 value -= run_dx
@@ -115,6 +118,9 @@ class Motion:
                 value -= run_dy
             axis, value = raw(axes[coord], value)
             value = normalize_rotation(axis, value)
+            if (isinstance(axis, ControllerAxis) and axis.axis_kind == "rotation" and axis.settings.wrap_around
+                    and not axis.settings.limit_rotation):        # as OpenPnP's wrap around: the shortest way
+                value = axis.position + ((value - axis.position + 180.0) % 360.0 - 180.0)
             if axis in out and abs(out[axis] - value) > axis.tolerance:
                 raise MachineError("invalid_params", f"{obj.name}: z and another coordinate drive axis/{axis.id}"
                                                      " to different positions")
@@ -154,11 +160,17 @@ class Motion:
             raise MachineError("soft_limit", p["message"], axis=p["axis"], value=p["value"], limit=p["limit"])
 
     # ── moving ─────────────────────────────────────────────────────────────────────────────────────────────────
-    def execute(self, targets: dict[AxisBase, float], speed: float = 1.0) -> None:
+    def execute(self, targets: dict[AxisBase, float], speed: float = 1.0, backlash: bool = True) -> None:
         """Move raw axes (already checked). Axes of one driver move together; virtual axes just take the value."""
         moving = {a: v for a, v in targets.items() if abs(a.position - v) > a.tolerance}
         if not moving:
             return
+        if backlash:
+            pre, factor = self._backlash(moving)
+            if pre:                              # as OpenPnP: past the target first, then approach from one side
+                self.execute({**moving, **pre}, speed, backlash=False)
+                self.execute(moving, speed * factor, backlash=False)
+                return
         virtual = {a.id: v for a, v in moving.items() if isinstance(a, VirtualAxis)}
         if virtual:
             self.m.set_axis_positions(virtual)
@@ -166,24 +178,98 @@ class Motion:
         for a, v in moving.items():
             if isinstance(a, ControllerAxis):
                 by_driver.setdefault(a.driver, {})[a] = v
-        for driver, axis_targets in by_driver.items():
-            self.m.motion.update(moving=True)
-            try:
-                driver.move(axis_targets, speed)
-            finally:
-                self.m.motion.update(moving=False)
+        speed = self.effective_speed(speed, moving)
+        self.m.motion.update(moving=True)
+        try:
+            if len(by_driver) <= 1:
+                for driver, axis_targets in by_driver.items():
+                    driver.move(axis_targets, speed)
+            else:
+                # as OpenPnP: every controller gets its part of the move, then all are waited for (each has its own
+                # link, so they run side by side)
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=len(by_driver)) as pool:
+                    futures = [pool.submit(d.move, t, speed) for d, t in by_driver.items()]
+                    errors = [f.exception() for f in futures]
+                first = next((e for e in errors if e is not None), None)
+                if first is not None:
+                    raise first
+        finally:
+            self.m.motion.update(moving=False)
+
+    def _backlash(self, moving: dict) -> tuple[dict, float]:
+        """Overshoot targets for axes with backlash compensation (one_sided: always; one_sided_optimized: only when
+        the move would arrive from the other side), and the speed factor of the final approach."""
+        pre: dict = {}
+        factor = 1.0
+        for a, v in moving.items():
+            b = getattr(a.settings, "backlash", None) if isinstance(a, ControllerAxis) else None
+            if b is None or b.method == "none" or not b.offset:
+                continue
+            arriving_from = math.copysign(1.0, a.position - v)          # the side the move comes from
+            if b.method == "one_sided_optimized" and arriving_from == math.copysign(1.0, b.offset):
+                continue
+            target = v + b.offset
+            lim = a.limits()
+            if lim:
+                target = min(max(target, lim[0]), lim[1])
+            pre[a] = target
+            factor = min(factor, b.speed_factor)
+        return pre, factor
+
+    def effective_speed(self, speed: float, moving: dict) -> float:
+        """As OpenPnP: the request's speed × the global speed × the slowest part speed of any nozzle carrying a part
+        on a head that moves; never below 5 %."""
+        slowest = 1.0
+        for head in self.m.of_kind("head"):
+            nozzles = [n for n in self.m.of_kind("nozzle") if n.head is head]
+            axes = {head.x, head.y} | {raw(n.z, 0.0)[0] for n in nozzles} | {raw(n.rotation, 0.0)[0] for n in nozzles}
+            if not axes & set(moving):
+                continue
+            for n in nozzles:
+                st = n.status()
+                if st.get("part") and st.get("part_speed"):
+                    slowest = min(slowest, float(st["part_speed"]))
+        factor = speed * float(self.m.motion.status().get("speed") or 1.0) * slowest
+        return max(0.05, min(1.0, factor))
 
     def safe_z_targets(self, head: Any) -> dict[AxisBase, float]:
-        """Raw targets that bring every nozzle on the head into its safe zone."""
+        """Raw targets that bring everything on the head to safe Z, as OpenPnP's head "move to safe Z": every nozzle
+        into its safe zone, and head cameras' virtual Z back to its home. A nozzle whose Z has no safe zone is an
+        error, as in OpenPnP (it would otherwise travel at whatever depth it is)."""
         out: dict[AxisBase, float] = {}
+        raised: set = set()                     # axes set for a nozzle carrying a part (dynamic safe Z): they win
         for nozzle in self.m.of_kind("nozzle"):
             if nozzle.head is not head:
                 continue
             axis, _ = raw(nozzle.z, nozzle.z.position)
             if isinstance(axis, ControllerAxis):
+                if not axis.settings.safe_zone:
+                    raise MachineError("invalid_params", f"{nozzle.name}: its Z (axis/{axis.id}) has no safe_zone, "
+                                                         "so it can't be raised to safe Z before moving",
+                                       what="safe_zone", id=axis.id)
                 value = axis.safe_value()
-                if value is not None:
+                st = nozzle.status()
+                if nozzle.settings.dynamic_safe_z and st.get("part") and st.get("part_height"):
+                    # as OpenPnP's dynamic safe Z: the part's underside at least at the safe zone's low end (in the
+                    # nozzle's coordinates), within the safe zone
+                    low, high = axis.settings.safe_zone
+                    n_low = min(self._coord(nozzle.z, {axis: low}), self._coord(nozzle.z, {axis: high}))
+                    want_n = n_low + float(st["part_height"])
+                    if self._coord(nozzle.z, {}) < want_n - axis.tolerance:
+                        _, want = raw(nozzle.z, want_n)
+                        value = min(max(want, low), high)
+                        out[axis] = value
+                        raised.add(axis)
+                        continue
+                if value is not None and axis not in raised:
                     out[axis] = value
+        for camera in self.m.of_kind("camera"):
+            if camera.head is not head or camera.settings.axes is None:
+                continue
+            z = self.m.get("axis", camera.settings.axes.z)
+            if isinstance(z, VirtualAxis) and abs(z.position - z.settings.home) > z.tolerance:
+                out[z] = z.settings.home
         return out
 
     def move_to(self, obj: Any, location: dict, speed: float = 1.0, safe_z: str = "auto") -> dict:
@@ -197,7 +283,12 @@ class Motion:
 
         head = getattr(obj, "head", None)
         xy = {a: v for a, v in targets.items() if head is not None and a in (head.x, head.y)}
-        travels = any(abs(a.position - v) > a.tolerance for a, v in xy.items())
+        # as OpenPnP's moveToLocationAtSafeZ: X, Y or rotation changing means travel (rotating a part at depth can
+        # smear it)
+        rot = self.axes_of(obj).get("rotation") if head is not None else None
+        rot_raw = raw(rot, 0.0)[0] if rot is not None else None
+        turns = rot_raw is not None and rot_raw in targets and abs(rot_raw.position - targets[rot_raw]) > rot_raw.tolerance
+        travels = turns or any(abs(a.position - v) > a.tolerance for a, v in xy.items())
         if safe_z == "auto" and travels:
             lift = self.safe_z_targets(head)
             self.check(lift)
@@ -276,15 +367,17 @@ class Motion:
         for n in self.m.of_kind("nozzle"):
             if n.head is not head:
                 continue
-            z_raw_axis, _ = raw(n.z, 0.0)
-            if self._in_safe_zone(z_raw_axis, targets.get(z_raw_axis, z_raw_axis.position)):
+            # as OpenPnP: the part's underside counts, so a nozzle with a part just inside the safe zone is checked
+            held = float(n.status().get("part_height") or 0.0) if n.status().get("part") else 0.0
+            z_raw_axis, z_low_raw = raw(n.z, self._coord(n.z, targets) - held)
+            if self._in_safe_zone(z_raw_axis, z_low_raw):
                 continue
             off = n.settings.offset
             x = self._coord(head.x, targets) + (off.x or 0.0)
             y = self._coord(head.y, targets) + (off.y or 0.0)
-            z = self._coord(n.z, targets)
+            z = self._coord(n.z, targets) + (n.settings.offset.z or 0.0)
             st = n.status()
-            tip = self.m.objects.get(f"nozzle_tip/{n.settings.tip}") if n.settings.tip else None
+            tip = self.m.objects.get(f"nozzle_tip/{n.tip_id()}") if n.tip_id() else None
             safe = 1.0
             subject = f"nozzle {n.id}"
             if tip is not None:
@@ -308,12 +401,34 @@ class Motion:
                                        f"{subject} would potentially crash into board {b.get('id')}. To jog there "
                                        "anyway, turn off board protection", nozzle=n.id, board=b.get("id"))
 
+    def center_on(self, camera: Any, point: dict, nozzle: Any | None = None) -> dict:
+        """As OpenPnP's Shift+click in a camera view: bring what is seen at `point` (machine X/Y, from the picture) to
+        the centre. A head camera moves there. On a machine camera the nozzle moves by (location - point): within
+        the camera's roaming radius at its depth, otherwise at safe Z."""
+        if camera.head is not None:
+            return self.move_to(camera, {"x": point["x"], "y": point["y"]})
+        if nozzle is None:
+            raise MachineError("invalid_params", "a machine camera moves a nozzle: give the nozzle")
+        loc = camera.settings.location
+        if loc is None or loc.x is None or loc.y is None:
+            raise MachineError("invalid_params", f"{camera.name} has no location")
+        here = self.location(nozzle)
+        target = {"x": here["x"] + loc.x - point["x"], "y": here["y"] + loc.y - point["y"]}
+        r = camera.settings.roaming_radius
+        near = all(math.hypot(p["x"] - loc.x, p["y"] - loc.y) <= r + 1e-9 for p in (here, target))
+        return self.move_to(nozzle, target, safe_z="none" if r > 0 and near else "auto")
+
     def user_action(self, obj: Any, jogging: bool) -> None:
         """After a move the user asked for (OpenPnP's machineTargetedUserAction): unsafe Z roaming. A tool with a
         virtual Z (a head camera) jogged below its safe Z farther than machine.unsafe_z_roaming_distance from
         where it went below goes back to safe Z (its virtual Z is reset)."""
         if getattr(obj, "head", None) is None or isinstance(obj, AxisBase):
             return
+        if self.m.config.machine.auto_tool_select:      # as OpenPnP: the tool the user moved is the selected one
+            self.m.state.update(selected_tool=obj.name)
+        light = getattr(obj.settings, "light", None) if isinstance(obj, CameraBase) else None
+        if light and obj.settings.light_on_user_action and self.m.get("actuator", light).status().get("value") is not True:
+            self.m.actuate(light, True)          # as OpenPnP's user action light on
         z_axis = self.axes_of(obj).get("z")
         if z_axis is None:
             return
@@ -326,7 +441,8 @@ class Motion:
             self._last_user_action = (obj.name, here)
         elif isinstance(base, VirtualAxis):
             last = self._last_user_action[1]
-            dist = math.sqrt(sum((here.get(k, 0.0) - last.get(k, 0.0)) ** 2 for k in ("x", "y", "z")))
+            # as OpenPnP (Location.getLinearDistanceTo): X/Y only
+            dist = math.hypot(here.get("x", 0.0) - last.get("x", 0.0), here.get("y", 0.0) - last.get("y", 0.0))
             if dist > self.m.config.machine.unsafe_z_roaming_distance:
                 log.debug("%s roamed %.2f mm below safe Z: back to safe Z", obj.name, dist)
                 self.m.set_axis_positions({base.id: float(base.settings.home)})
@@ -361,10 +477,19 @@ class Motion:
         self.execute(lift)
 
     def park(self, head: Any, axes: str = "all") -> dict:
-        if axes not in ("xy", "z", "all"):
-            raise MachineError("invalid_params", "axes must be xy, z or all")
+        if axes not in ("xy", "z", "rotation", "all"):
+            raise MachineError("invalid_params", "axes must be xy, z, rotation or all")
         self.move_to_safe_z(head)
         if axes == "z":
+            return head.compute_location()
+        if axes == "rotation":                  # as OpenPnP's C park: 0, or the middle of a limited range
+            for n in self.m.of_kind("nozzle"):
+                if n.head is not head:
+                    continue
+                base, _ = raw(n.rotation, 0.0)
+                lim = base.settings.limit_rotation if isinstance(base, ControllerAxis) else None
+                target = 0.0 if not lim or lim[0] <= 0 <= lim[1] else (lim[0] + lim[1]) / 2
+                self.move_to(n, {"rotation": target}, safe_z="none")
             return head.compute_location()
         park = self.m.config.machine.park
         if park is None or park.head != head.id:

@@ -5,8 +5,9 @@ tests, the simulator (`sim://grblhal`, simulated cameras) and, where it touches 
 
 Status marks: **done**, *partly* (what's missing is said), open (no mark).
 
-Written from OpenPnP 2.x's documented features and its file formats, not from its source code (see the license
-note in `design.md`).
+Written from OpenPnP 2.x's documented features and file formats, and checked against its behaviour in the source on
+2026-11-25 (no code taken from it: see the license note in `design.md`). Where TinkerPnP behaves differently, and
+what is still to align: `openpnp-differences.md`.
 
 ## Already in TinkerPnP
 
@@ -21,7 +22,7 @@ measurement of units per pixel; web UI dashboard. Differences in behaviour: `ope
 | OpenPnP | TinkerPnP |
 |---|---|
 | Parts (id, name, package, height, speed, pick retries) | **done** |
-| Packages: footprint (pads, body size), compatible nozzle tips, bottom-vision settings | **done** (data; vision settings used with E) |
+| Packages: footprint (pads, body size), compatible nozzle tips, bottom-vision settings | *partly*: data **done**; compatible tips aren't used yet (B4, D3), vision settings with E; pick vacuum / blow-off levels, tape specification missing |
 | Boards: placements (ref, part, side, X/Y/rotation, type placement/fiducial, enabled), dimensions | **done** |
 | Panels (arrays of boards, panel fiducials) | step A5 |
 | Jobs: boards (and panels) with their location, side, enabled; placed status | **done** (panels: A5) |
@@ -36,9 +37,9 @@ measurement of units per pixel; web UI dashboard. Differences in behaviour: `ope
 | Pick: move to feeder, nozzle down, vacuum on, dwell, up | **done** |
 | Place: move to placement, down to board + part height, vacuum off, blow-off, dwell, up | **done** (blow-off: B2) |
 | Part height from part/package; dynamic safe Z with a part on the nozzle | *partly*: part height **done**; dynamic safe Z: B3 |
-| Head vacuum pump control (pump on while any nozzle holds a part) | **done** |
+| Head vacuum pump control (pump on while any nozzle holds a part) | **done**: `pump_control` none / part_on / task_duration / keep_running, off on disable |
 | Vacuum sensing: part-on / part-off checks with thresholds, retry | step B2 |
-| Discard location (drop rejected parts) | **done** (`nozzle.discard`) |
+| Discard location (drop rejected parts) | *partly*: `nozzle.discard` with rotation, place dwell, no-op without a part, at job start and end **done**; blow-off missing (B2) |
 | Rotation modes (absolute part angle, minimal rotation), limits per nozzle | step B3 |
 | Nozzle tip changer (load/unload with 3–4 waypoints and speeds), automatic tip selection | step B4 |
 | Nozzle tip cleaning | step B4 |
@@ -65,10 +66,10 @@ measurement of units per pixel; web UI dashboard. Differences in behaviour: `ope
 | OpenPnP | TinkerPnP |
 |---|---|
 | Board location in the machine (manual: capture two placements or a corner) | *partly*: location + rotation per board, origin from the top camera, or measured from fiducials |
-| Fiducial check (2 or 3 fiducials, board rotation and scale, per board) | **done**: 2+ round fiducials, rotation + translation fit (least squares, scale and error checked), per board in the job or on request |
-| Job processor: plan, feed, pick, (align), place, per placement, with several nozzles | **done** for one nozzle at a time (several nozzles: D3) |
+| Fiducial check (2 or 3 fiducials, board rotation and scale, per board) | *partly*: 2+ round fiducials, rigid fit (rotation + translation; scale checked, not applied), per board in the job or on request; OpenPnP's affine fit, 4 mm search distance and editable pipeline missing |
+| Job processor: plan, feed, pick, (align), place, per placement, with several nozzles | *partly*: one nozzle at a time, placement side filter, pre-flight errors, nozzle by compatible tip, discard and park at start/end **done**; ordering and several nozzles missing (D3) |
 | Start / pause / step / stop, skip placement, mark placed / not placed, resume after a stop | **done** (+ dry run) |
-| Error handling: retry pick, skip, pause on error, feeder empty | **done** (pause with the reason, resume retries) |
+| Error handling: retry pick, skip, pause on error, feeder empty | *partly*: pause with the reason, resume retries, skip, feed retries, taking a failing feeder out and using the next one **done**; Defer mode, discard between pick retries missing |
 | Bottom side placements (flipped board) | step D3 |
 | Multi-nozzle planning (pick with several nozzles, then place), tip changes in the plan | step D3 |
 | Panelized jobs, auto panelize, panel fiducials | step D3 |
@@ -81,11 +82,11 @@ measurement of units per pixel; web UI dashboard. Differences in behaviour: `ope
 | Pipeline engine (stages: image read, filters, threshold, contours, Hough circles, template match, ...) and editor | *partly*: engine with gray, blur, threshold, morph, circles, blobs, nearest (sizes in mm); more stages and the editor: E5 |
 | Fiducial locator (round fiducials, by footprint), visual homing (homing fiducial) | *partly*: round fiducials (diameter from the fiducial's package pad), iterating onto the mark; visual homing later |
 | Bottom vision: part rotation and offset, pre-rotate, multi-pass, footprint-based | step E2 |
-| Nozzle tip calibration (runout compensation, model by angle) | **done**: the empty nozzle turns over an up-looking camera (12 angles), circle fit gives runout, phase and the axis position; saved per tip, moves compensated. Bench: N1/NT1 39 µm, fit within 4 µm |
+| Nozzle tip calibration (runout compensation, model by angle) | **done**: the empty nozzle turns over an up-looking camera (12 angles), circle fit gives runout, phase and the axis position; saved per tip, moves compensated. Bench: N1/NT1 39 µm, fit within 4 µm. Since 2026-11-25 as OpenPnP: per tip and nozzle, off by default, reset when the camera or offsets change, re-run after homing (optional), ambiguous detections discarded. Missing: re-run on tip change (tip changer), use of the axis offset |
 | Strip feeder hole vision | step E3 |
 | Camera settling (fixed time or motion detection) | *partly*: fixed time (`settle`); motion detection later |
 | Lens calibration (undistort), advanced camera calibration | step E4 |
-| Camera light actuators (light on while imaging) | step E1 |
+| Camera light actuators (light on while imaging) | open: left out of E1 (OpenPnP: light actuator per camera, on before capture by default) |
 | Vision compositing (large parts in several shots) | later |
 
 ## F. Machine and motion

@@ -10,7 +10,7 @@ from tinkerpnp.api.server import create_app
 from tinkerpnp.core import cameras
 from tinkerpnp.core.cameras import DeviceSelector, V4l2CameraSettings, list_devices, resolve_device
 from tinkerpnp.core.errors import MachineError
-from tinkerpnp.core.objects import ImageTransform
+from tinkerpnp.core.objects import ImageTransform, Location
 
 from test_motion import simulated
 
@@ -67,6 +67,22 @@ def test_transform_and_overlays(m):
     assert cam.jpeg(seq, img, ("crosshair", "scale", "grid", "info")) is jpeg     # cached
 
 
+def test_transforms_mean_what_they_mean_in_openpnp(m):
+    """flipX flips about the X axis (top-bottom), flipY about the Y axis (left-right); rotation is counter-clockwise,
+    any angle, and the image grows to its bounding box. Settings copied from OpenPnP must look the same."""
+    cam = m.get("camera", "top")
+    img = np.zeros((40, 60, 3), np.uint8)
+    img[0:10, 0:10] = 255                                      # a white square in the top-left corner
+    t = lambda **kw: (setattr(cam.settings, "transform", ImageTransform(**kw)), cam.apply_transform(img))[1]  # noqa: E731
+    assert t(flip_x=True)[35, 5].mean() == 255                 # now bottom-left
+    assert t(flip_y=True)[5, 55].mean() == 255                 # now top-right
+    r = t(rotate=90)                                           # counter-clockwise: top-left goes to bottom-left
+    assert r.shape[:2] == (60, 40) and r[55, 5].mean() == 255
+    assert t(rotate=-90)[5, 35].mean() == 255                  # clockwise: to top-right
+    r = t(rotate=30)
+    assert r.shape[:2] == (round(40 * np.cos(np.pi / 6) + 60 * 0.5), round(40 * 0.5 + 60 * np.cos(np.pi / 6)))
+
+
 def test_device_closes_after_the_last_viewer(m):
     cam = m.get("camera", "top")
     cam.settings.idle_close = 100
@@ -121,14 +137,48 @@ def test_devices_are_listed_with_usb_details(fake_sys):
     assert devs[2]["links"][0].endswith("usb-Sonix_USB_2.0_Camera_SN0001-video-index0")
 
 
-def test_selectors_in_order(fake_sys):
+def test_selectors_must_all_fit(fake_sys):
     assert resolve_device(DeviceSelector(usb_serial="SN0001"))[0].endswith("video2")
-    assert resolve_device(DeviceSelector(usb_serial="gone", usb_id="0c45:6340")) == (str(fake_sys / "video0"),
-                                                                                       "usb_id")
+    assert resolve_device(DeviceSelector(usb_id="0c45:6340")) == (str(fake_sys / "video0"), "usb_id")
     assert resolve_device(DeviceSelector(name="USB 2.0 Camera"))[1] == "name"
+    with pytest.raises(MachineError):                  # serial of one camera, id of another: no camera fits both
+        resolve_device(DeviceSelector(usb_serial="SN0001", usb_id="0c45:6340"))
     with pytest.raises(MachineError) as e:
         resolve_device(DeviceSelector(usb_id="dead:beef"))
     assert "present:" in e.value.message and "0c45:6366" in e.value.message
+
+
+def test_the_port_decides_between_identical_cameras(fake_sys):
+    """Two Sonix cameras with the same serial (SN0001): each config entry gets the one in its port, whichever the
+    kernel lists first (the bench, 2026-11-25: a second one in port 2 was opened instead of the one in port 3)."""
+    usb, sysfs = fake_sys.parent / "usb", fake_sys.parent / "sys"
+    port0 = usb / "1-1.0" / "1-1.0:1.0"                 # the new camera, in a port that the kernel lists first
+    port0.mkdir(parents=True)
+    for f, v in (("idVendor", "0c45"), ("idProduct", "6366"), ("serial", "SN0001"), ("product", "USB 2.0 Camera")):
+        (usb / "1-1.0" / f).write_text(v + "\n")
+    (sysfs / "video00").mkdir()
+    for f, v in (("name", "USB 2.0 Camera"), ("index", "0")):
+        (sysfs / "video00" / f).write_text(v + "\n")
+    (sysfs / "video00" / "device").symlink_to(port0)
+    (fake_sys / "video00").write_text("")
+    by_path = fake_sys / "v4l" / "by-path"
+    by_path.mkdir()
+    (by_path / "usb-0:3:1.0-video-index0").symlink_to(fake_sys / "video2")
+    (by_path / "usb-0:2:1.0-video-index0").symlink_to(fake_sys / "video00")
+    old = DeviceSelector(usb_serial="SN0001", usb_id="0c45:6366", path=str(by_path / "usb-0:3:1.0-video-index0"))
+    new = DeviceSelector(usb_serial="SN0001", usb_id="0c45:6366", path=str(by_path / "usb-0:2:1.0-video-index0"))
+    assert resolve_device(old) == (str(fake_sys / "video2"), "path+usb_serial+usb_id")
+    assert resolve_device(new) == (str(fake_sys / "video00"), "path+usb_serial+usb_id")
+    # unplugged from its port: with two that fit, guessing could swap them, so it's an error
+    (by_path / "usb-0:3:1.0-video-index0").unlink()
+    with pytest.raises(MachineError) as e:
+        resolve_device(old)
+    assert "2 cameras fit" in e.value.message
+
+
+def test_a_unique_camera_is_found_in_another_port(fake_sys):
+    sel = DeviceSelector(usb_serial="SN0001", path=str(fake_sys / "v4l" / "by-path" / "gone-video-index0"))
+    assert resolve_device(sel) == (str(fake_sys / "video2"), "usb_serial (not at its path)")
 
 
 # ── v4l2 capture path, fed from a video file ──────────────────────────────────────────────────────────────────
@@ -199,13 +249,20 @@ def test_measure_units_per_pixel_with_the_nozzle(m):
     from tinkerpnp.core.calibration import measure_units_per_pixel
     run(m, m.enable)
     cam, n1 = m.get("camera", "bottom"), m.get("nozzle", "N1")
-    run(m, m.planner.move_to, n1, {"x": 189.9, "y": 49.5, "z": 38.0})
-    r = run(m, measure_units_per_pixel, m, cam, n1, 1.0, 0.15)
+    assert (cam.settings.location.x, cam.settings.location.y, cam.settings.location.z) == (189.9, 49.5, 38.0)
+    run(m, m.planner.move_to, n1, {"x": 100, "y": 100})                     # somewhere else, up at safe Z
+    r = run(m, measure_units_per_pixel, m, cam, n1, 1.0, 0.15)              # goes to the camera, down into focus
     assert r["value"]["x"] == pytest.approx(0.02, rel=0.03) and r["value"]["y"] == pytest.approx(0.02, rel=0.03)
     d = r["details"]
     assert not d["mirrored_x"] and not d["mirrored_y"] and abs(d["rotation_deg"]) < 1
-    assert n1.compute_location()["x"] == pytest.approx(189.9)              # back where it started
-    cam.settings.transform = ImageTransform(flip_x=True)                     # a mirrored camera is reported
+    end = n1.compute_location()                                             # ends at the camera's location
+    assert (end["x"], end["y"], end["z"]) == (pytest.approx(189.9), pytest.approx(49.5), pytest.approx(38.0, abs=0.2))
+    assert r["details"]["at"] == {"x": 189.9, "y": 49.5, "z": 38.0}
+    cam.settings.location = None                                             # no location: nothing to measure at
+    with pytest.raises(MachineError):
+        run(m, measure_units_per_pixel, m, cam, n1, 1.0, 0.15)
+    cam.settings.location = Location(x=189.9, y=49.5, z=38.0)
+    cam.settings.transform = ImageTransform(flip_y=True)    # left-right (OpenPnP's flipY): reported as mirrored X
     r = run(m, measure_units_per_pixel, m, cam, n1, 1.0, 0.15)
     assert r["details"]["mirrored_x"] and not r["details"]["mirrored_y"]
 
@@ -236,3 +293,69 @@ def test_frames_are_decoded_only_on_demand(m):
     assert cam._running and cam._seq == seq               # open, but no new frames without a viewer
     assert watched >= 3
     assert cam.snapshot()[0] > seq                        # a snapshot still gets a fresh one
+
+
+def test_light_on_for_pictures_and_user_moves(m):
+    """As OpenPnP's camera light actuator: on before vision's picture (and when the user moves the camera); off after
+    it if asked; other cameras' lights off while this one takes a picture if they ask for it (anti-glare)."""
+    run(m, m.enable)
+    top, bottom = m.get("camera", "top"), m.get("camera", "bottom")
+    light, other = m.get("actuator", "valve2"), m.get("actuator", "valve1")
+    top.settings.light, bottom.settings.light = "valve2", "valve1"
+    bottom.settings.light_off_for_other_cameras = True
+    run(m, m.actuate, "valve1", True)
+    top.settings.settle = 10
+    top.acquire()
+    try:
+        run(m, top.capture)
+    finally:
+        top.release()
+    assert light.status()["value"] is True and other.status()["value"] is False
+    top.settings.light_off_after_capture = True
+    top.acquire()
+    try:
+        run(m, top.capture)
+    finally:
+        top.release()
+    assert light.status()["value"] is False
+    m.submit(m.planner.jog, top, {"x": 1}).result(10)
+    m.submit(m.planner.user_action, top, True).result(10)
+    assert light.status()["value"] is True
+
+
+def test_settle_by_motion_waits_until_the_image_stops(m):
+    """OpenPnP's Motion settle method: pictures until two in a row barely differ."""
+    cam = m.get("camera", "top")
+    cam.settings.settle_method = "motion"
+    cam.settings.noise = 0.5
+    cam.settings.fps = 30
+    run(m, m.enable)
+    cam.acquire()
+    try:
+        t0 = time.monotonic()
+        frame = run(m, cam.capture)
+        assert frame is not None and time.monotonic() - t0 < cam.settings.settle_timeout / 1000.0
+        cam.settings.settle_threshold = 0.0001                     # never still: the timeout takes the picture
+        t0 = time.monotonic()
+        run(m, cam.capture)
+        assert time.monotonic() - t0 >= cam.settings.settle_timeout / 1000.0 - 0.05
+    finally:
+        cam.release()
+
+
+def test_openpnp_transforms_scale_offset_white_balance_deinterlace(m):
+    from tinkerpnp.core.objects import Gains, ImageSize, PixelOffset
+    cam = m.get("camera", "top")
+    img = np.zeros((40, 60, 3), np.uint8)
+    img[:, :] = (100, 100, 100)
+    img[0:10, 0:10] = (200, 200, 200)
+    img[1::2] = 0                                              # odd lines dark: an interlaced field
+    cam.settings.transform = ImageTransform(white_balance=Gains(red=1.2, green=1.0, blue=0.5))
+    out = cam.apply_transform(img)
+    assert tuple(out[20, 30]) == (50, 100, 120)                  # BGR: blue halved, red up
+    cam.settings.transform = ImageTransform(scale=ImageSize(width=30, height=20))
+    assert cam.apply_transform(img).shape == (20, 30, 3)
+    cam.settings.transform = ImageTransform(offset=PixelOffset(x=5, y=3))
+    assert cam.apply_transform(img)[3 + 4, 5 + 4].mean() == 200   # the corner square moved right 5, down 3
+    cam.settings.transform = ImageTransform(deinterlace=True)
+    assert cam.apply_transform(img)[1:39].min() > 0              # the dark field is gone

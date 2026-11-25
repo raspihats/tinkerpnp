@@ -73,6 +73,8 @@ class AppState:
         machine.add_gcode_listener(self.on_gcode)
         machine.state_store = self.data
         machine.add_event_listener(self.notify_all)
+        for nozzle in machine.of_kind("nozzle"):          # the loaded tip lives in the state store
+            nozzle.update(tip=nozzle.tip_id())
         self.job = None
         for feeder in machine.of_kind("feeder"):
             feeder.refresh_status()
@@ -177,6 +179,8 @@ def create_app(machine: Machine, ui_dir: str | os.PathLike | None = None, data_p
     machine.add_gcode_listener(state.on_gcode)
     machine.state_store = data
     machine.add_event_listener(state.notify_all)
+    for nozzle in machine.of_kind("nozzle"):              # the loaded tip lives in the state store
+        nozzle.update(tip=nozzle.tip_id())
     for feeder in machine.of_kind("feeder"):
         feeder.refresh_status()
 

@@ -38,7 +38,7 @@ Notifications from the server have no `id`:
 ```
 
 Batch requests (JSON arrays) are supported. Requests on one connection are handled in order of arrival unless a
-method is documented as *immediate* (`machine.stop`, `motion.jog_cancel`, `job.pause`), which bypass the queue.
+method is documented as *immediate* (`machine.stop`, `machine.disable`, `machine.set_speed`, `motion.jog_cancel`, `job.pause`), which bypass the queue.
 
 ### 1.2 HTTP
 
@@ -113,6 +113,8 @@ to switch on; `message` is human-readable and may change.
 | -32019 | `feeder_error` | 409 | Feeder couldn't feed (`data.feeder`) |
 | -32020 | `unauthorized` | 401 | Missing/invalid credentials |
 | -32022 | `board_protection` | 409 | Jog refused: a nozzle would go below safe Z over a board (`data.nozzle`, `data.board`) |
+| -32023 | `part_check` | 409 | Vacuum part-on / part-off check failed |
+| -32024 | `manual_tip_change` | 409 | A nozzle tip must be changed by hand (no changer locations); confirm with `nozzle.load_tip` `manual: true` |
 | -32021 | `below_resolution` | 422 | Jog step smaller than one step of the axis (`data.coord`, `data.delta`, `data.min_step`, `data.axis`) |
 | -32030 | `restart_required` | 409 | Change accepted but needs reconnect/restart to apply (informational on `config.update`) |
 | -32099 | `internal_error` | 500 | Bug; `data.trace_id` points into the server log |
@@ -180,9 +182,10 @@ don't know.
 
 | Method | Params | Result | Notes |
 |---|---|---|---|
-| `machine.enable` | – | `{}` when ready | Runs the configured `on_enable` sequence (e.g. driver enable command, homing, park). Errors leave the machine disabled |
-| `machine.disable` | – | `{}` | Actuators to their `on_disable` values, driver disable command (e.g. sleep), motors released |
+| `machine.enable` | – | `{}` when ready | Runs the configured `on_enable` sequence (e.g. driver enable command, homing, park). If the drivers can't be enabled the machine stays disabled; if a later step (homing) fails it stays enabled and unhomed, as in OpenPnP |
+| `machine.disable` | – | `{}` | **Immediate**, as OpenPnP's power button: a running move and queued requests are stopped first. Actuators to their `on_disable` values, driver disable command (e.g. sleep), motors released, unhomed |
 | `machine.home` | `axes` (optional list; default all homeable) | `{}` when done | Then `on_home` (e.g. park) |
+| `machine.set_speed` | `speed` (0.01..1) | `{speed}` | **Immediate.** The global speed factor (OpenPnP's speed slider, default 1): every following move runs at this fraction, also × the part speed while a nozzle carries a part, never below 5 %. In `motion` status as `speed` |
 | `machine.stop` | `reason` (optional) | `{}` | **Immediate.** Aborts motion and the job, cancels queued requests (they fail with `stopped`), driver stop sequence (e.g. feed hold + soft reset). Machine ends `alarm` or `idle` depending on the driver |
 | `machine.run_macro` | `name` | `{}` when done. Runs a macro from `machine.macros` |
 | `machine.clear_alarm` | – | `{}` | Driver-specific unlock where the controller allows it |
@@ -233,7 +236,11 @@ How motion works (implemented in phase 1, step 1):
 | `camera.controls` | yes | `id` | `v4l2` cameras: `[{name, type, min, max, step, default, value}]` from `v4l2-ctl --list-ctrls` (or the OpenCV values without it). The camera must be open (being watched) |
 | `camera.set_controls` | | `id`, `controls` (`{name: value}`) | `{"problems": [...]}`. Applied now, **not saved**: put lasting values under the camera's `controls` in the configuration |
 | `camera.reopen` | | `id` | `{}`: closes and reopens the device |
-| `camera.devices` | yes | – | Video devices on the server: `[{path, name, index, capture, usb_id, usb_serial, manufacturer, product, links}]`, for the `device:` selector |
+| `camera.calibrate` | no | `camera`, `nozzle`, `save` (true) | Advanced calibration (as OpenPnP's): the empty nozzle's tip walks radial lines through an up-looking camera's view at two heights; returns the model (`rms_px`, `points`, `outliers`, `distortion`, `tilt_deg`, `rotation_deg`, `mirrored`, `distance_mm`, `units_per_pixel`, `axis_offset`, ...) and saves it as `camera_calibration/<id>`. `calibration.enabled` in the camera's settings switches the correction on |
+| `camera.calibration` | yes | `camera` | The saved model, with `active`, or null |
+| `camera.reset_calibration` | no | `camera` | Forget the model |
+| `camera.center_on` | no | `camera`, `x`, `y`, `nozzle` (machine cameras) | Shift+click in a view (as OpenPnP): bring what is seen at machine X/Y to the centre. A head camera moves there; on a machine camera the nozzle moves, at its depth within the camera's `roaming_radius` |
+| `camera.devices` | yes | – | Video devices on the server: `[{path, name, index, capture, usb_id, usb_serial, manufacturer, product, links, used_by}]`, for the `device:` selector; `used_by`: ids of the configured cameras whose selector picks the device (`H1/top` for head cameras) |
 
 Camera status fields: `looking`, `location`, `streaming`, `viewers`, `fps` (measured), `width`, `height`,
 `units_per_pixel`, `last_error`; `v4l2` adds `device`, `matched_by`, `requested` and `actual` (format).
@@ -263,6 +270,8 @@ Implemented (2026-11-24), in addition:
 | `feeder.reset` | `id`, `index` (default 0) | `{index, feeds_left}`: the feeder's counter (0 = full again) |
 | `nozzle.pick` | `nozzle`, `feeder` | `{part, feeder, pick_location}`: feed, pick (safe Z, down to the part top, vacuum on, dwell, up) |
 | `nozzle.place` | `nozzle`, `location` (machine frame; `z` = the surface, the part height is added; `rotation` = part angle) | `{part, location}` |
+| `nozzle.load_tip` | `nozzle`, `tip`, `manual` (false) | `{tip}`: tip change (as OpenPnP's tool changer): unload, then load `tip` through its holder path. Without `changer` locations: `manual_tip_change`; `manual: true` records a change done by hand |
+| `nozzle.unload_tip` | `nozzle`, `manual` (false) | `{tip: null, unloaded}`: the tip back into its holder (or taken off by hand) |
 | `nozzle.discard` | `nozzle` | `{part}`: drops the part at `machine.discard_location` |
 | `import.kicad_pos` | `text` (file content), `board_id`, `name`, `replace` | `{board, placements, fiducials, bottom, created_parts, created_packages}` |
 | `data.counts` | – | items per collection (read-only) |
@@ -392,9 +401,10 @@ stages: `src/tinkerpnp/core/vision.py`.
 
 Nozzle tip calibration (2026-11-24): `nozzle.calibrate_tip` (`nozzle`, `camera` = the first machine-mounted
 up-looking camera, `angles` = 12, `bore` = 0.6 mm, `save` = true; returns `{runout, phase, axis_offset, residual,
-angles, points}`), `nozzle.tip_calibration` (read), `nozzle.reset_tip_calibration`. The calibration belongs to the
-nozzle's `tip` and is kept in the data database; while it exists, X/Y moves of that nozzle put the tip (not the
-axis) at the target, for the rotation it will have.
+angles, points, compensated}`), `nozzle.tip_calibration` (read), `nozzle.reset_tip_calibration`. As OpenPnP, the
+calibration belongs to the tip on that nozzle (`tip_calibration/<nozzle>/<tip>` in the data database) and is applied
+only when the tip's `calibration.enabled` is on: X/Y moves of the nozzle then put the tip (not the axis) at the
+target, for the rotation it will have. It is reset when the up-looking camera or the nozzle's X/Y offset changes.
 
 ## 17. G-code console and raw driver access
 

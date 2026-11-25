@@ -56,7 +56,7 @@ def run_pipeline(image: Any, stages: list[dict], upp: tuple[float, float], param
             if v == "otsu":
                 _, img = cv2.threshold(img, 0, 255, mode | cv2.THRESH_OTSU)
             elif v == "dark":           # just above the darkest part: a hole (nozzle bore) much darker than all else
-                lo, mid = np.percentile(img, [1, 50])
+                lo, mid = np.percentile(img, [1, st.get("against", 50)])    # against: the percentile it's dark against
                 _, img = cv2.threshold(img, float(lo + (mid - lo) * st.get("fraction", 0.35)), 255, mode)
             else:
                 _, img = cv2.threshold(img, float(v), 255, mode)
@@ -112,22 +112,19 @@ def to_machine(camera_location: dict, det: dict, size: list[int], upp: tuple[flo
 
 
 def _frame_after_settle(camera: Any) -> Any:
-    time.sleep(camera.settings.settle / 1000.0)
-    got = camera.wait_frame(camera._seq, 5.0)
-    if got is None:
-        raise MachineError("driver_error", f"{camera.name}: no frame")
-    return got[1]
+    return camera.capture()                 # light, settle (fixed or by motion), a fresh frame
 
 
 def locate_fiducial(machine: Any, camera: Any, near: dict, diameter: float = 1.0, tolerance: float = 0.03,
-                    passes: int = 3, pipeline: list[dict] | None = None) -> dict:
-    """On the motion thread: find the round fiducial nearest to `near` (machine X/Y) with a head camera."""
-    upp_s = camera.settings.units_per_pixel
-    if upp_s is None:
+                    passes: int = 3, pipeline: list[dict] | None = None, max_distance: float = 4.0) -> dict:
+    """On the motion thread: find the round fiducial nearest to `near` (machine X/Y) with a head camera. As
+    OpenPnP: the mark nearest to the expected place, and at most `max_distance` (4 mm, its pipeline's maxDistance)
+    from it, so a board put down by eye is still found."""
+    if camera.settings.units_per_pixel is None:
         raise MachineError("invalid_params", f"{camera.name}: set units_per_pixel first")
     if camera.head is None or camera.settings.looking != "down":
         raise MachineError("invalid_params", f"{camera.name}: needs a head-mounted, down-looking camera")
-    upp = (upp_s.x, upp_s.y)
+    upp = camera.units_per_pixel_at(near.get("z"))      # as OpenPnP's 3D units per pixel: at the mark's height
     target = {"x": near["x"], "y": near["y"]}
     camera.acquire()
     try:
@@ -138,14 +135,16 @@ def locate_fiducial(machine: Any, camera: Any, near: dict, diameter: float = 1.0
             if not result["detections"]:
                 raise MachineError("vision_failed", f"no fiducial found near X {near['x']:.2f} Y {near['y']:.2f}",
                                    result={"near": near, "pass": attempt + 1})
-            det = result["detections"][0]
-            found = to_machine(camera.compute_location(), det, result["image_size"], upp)
+            here = camera.compute_location()
+            det = min(result["detections"], key=lambda d: math.hypot(
+                *(lambda p: (p["x"] - near["x"], p["y"] - near["y"]))(to_machine(here, d, result["image_size"], upp))))
+            found = to_machine(here, det, result["image_size"], upp)
             off = math.hypot(found["x"] - target["x"], found["y"] - target["y"])
             target = found
             if off <= tolerance:
                 break
         dist = math.hypot(target["x"] - near["x"], target["y"] - near["y"])
-        if dist > max(3 * diameter, 2.0):
+        if dist > max_distance:
             raise MachineError("vision_failed", f"found a mark {dist:.2f} mm away from the expected place: "
                                                 "probably not the fiducial", result={"near": near, "found": target})
         return {"x": round(target["x"], 4), "y": round(target["y"], 4), "diameter": round(det["d_mm"], 3),
@@ -155,8 +154,8 @@ def locate_fiducial(machine: Any, camera: Any, near: dict, diameter: float = 1.0
 
 
 def fit_board(board_points: list[tuple[float, float]], machine_points: list[tuple[float, float]]) -> dict:
-    """Rotation + translation (+ scale, reported) that maps board coordinates onto measured machine coordinates.
-    2 points: exact; more: least squares (Umeyama/Procrustes without reflection)."""
+    """What maps board coordinates onto measured machine coordinates. 2 points: rotation + translation (scale
+    reported); 3 or more: a full affine fit (scale per axis, shear), as OpenPnP."""
     import numpy as np
     if len(board_points) < 2:
         raise MachineError("invalid_params", "need at least 2 fiducials")
@@ -171,5 +170,19 @@ def fit_board(board_points: list[tuple[float, float]], machine_points: list[tupl
     scale = float(np.sum(b0 * (a0 @ rot.T)) / np.sum(a0 * a0)) if np.sum(a0 * a0) else 1.0
     t = cb - rot @ ca
     residuals = b - (a @ rot.T + t)
-    return {"x": round(float(t[0]), 4), "y": round(float(t[1]), 4), "rotation": round(math.degrees(angle), 4),
-            "scale": round(scale, 5), "error_mm": round(float(np.sqrt((residuals ** 2).sum(axis=1)).max()), 4)}
+    if len(board_points) < 3:
+        return {"x": round(float(t[0]), 4), "y": round(float(t[1]), 4), "rotation": round(math.degrees(angle), 4),
+                "scale": round(scale, 5), "error_mm": round(float(np.sqrt((residuals ** 2).sum(axis=1)).max()), 4)}
+    # as OpenPnP with 3+ fiducials: a full affine fit (scale per axis and shear too: a stretched or skewed PCB)
+    design = np.hstack([a, np.ones((len(a), 1))])
+    m, *_ = np.linalg.lstsq(design, b, rcond=None)          # 3x2: [x y 1] @ m = machine
+    lin, tr = m[:2].T, m[2]                                   # 2x2 (columns: board X, board Y), translation
+    sx, sy = float(np.linalg.norm(lin[:, 0])), float(np.linalg.norm(lin[:, 1]))
+    shear = float(lin[:, 0] @ lin[:, 1] / (sx * sy))
+    residuals = b - (a @ lin.T + tr)
+    return {"x": round(float(tr[0]), 4), "y": round(float(tr[1]), 4),
+            "rotation": round(math.degrees(math.atan2(lin[1, 0], lin[0, 0])), 4),
+            "scale": round((sx + sy) / 2, 5), "scale_x": round(sx, 5), "scale_y": round(sy, 5),
+            "shear": round(shear, 5),
+            "affine": [[float(lin[0, 0]), float(lin[0, 1]), float(tr[0])], [float(lin[1, 0]), float(lin[1, 1]), float(tr[1])]],
+            "error_mm": round(float(np.sqrt((residuals ** 2).sum(axis=1)).max()), 4)}

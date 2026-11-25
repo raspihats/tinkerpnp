@@ -33,6 +33,8 @@ ERRORS = {
     "unauthorized": (-32020, 401),
     "below_resolution": (-32021, 422),
     "board_protection": (-32022, 409),
+    "part_check": (-32023, 409),
+    "manual_tip_change": (-32024, 409),
     "restart_required": (-32030, 409),
     "internal_error": (-32099, 500),
 }

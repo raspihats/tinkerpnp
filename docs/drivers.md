@@ -43,7 +43,7 @@ override.
 | Setting | Meaning | `generic` | `grblhal` |
 |---|---|---|---|
 | `commands` | Command templates and regexes by OpenPnP name (table below) | see below | see below |
-| `letter_variables` | Template variables are axis letters (`{X}`, `{A}`, `{B}`). Off: `X`, `Y`, `Z` and `Rotation` for rotation axes, like OpenPnP without letter variables | true | true |
+| `letter_variables` | Template variables are axis letters (`{X}`, `{A}`, `{B}`). Off: `X`, `Y`, `Z` and `Rotation` for rotation axes, like OpenPnP without letter variables. (OpenPnP still reads the position report by letter; TinkerPnP by the same names: to align) | true | true |
 | `backslash_escapes` | Decode `\u0018`, `\n`, ... inside **commands** (not regexes), for commands copied from OpenPnP. In YAML, double-quoted strings already do this | false | false |
 | `line_ending` | Appended to every line | `"\n"` | `"\n"` |
 | `connect_wait` | Wait after opening the port, for boards that reset when the port opens | 0 | 200 ms |
@@ -65,7 +65,7 @@ override.
 
 ### Commands
 
-Missing commands are skipped, as in OpenPnP: a machine without `SET_GLOBAL_OFFSETS_COMMAND` simply doesn't send one.
+Missing commands are skipped, as in OpenPnP: a machine without `MOVE_TO_COMPLETE_COMMAND` simply doesn't send one.
 Commands can have several lines (separated by `\n`); each line is sent and confirmed on its own.
 
 | Name | When | `grblhal` default |
@@ -76,7 +76,7 @@ Commands can have several lines (separated by `\n`); each line is sent and confi
 | `HOME_COMMAND` | `machine.home` (all axes) | `$H` (home all axes) |
 | `HOME_AXIS_COMMAND` * | `machine.home` with some axes: once per axis, `{Letter}`, `{Id}`. Without it, homing some axes homes all | `$H{Letter}` |
 | `HOME_COMPLETE_REGEX` | Waited for after homing | – |
-| `SET_GLOBAL_OFFSETS_COMMAND` | After homing, with each axis at its `home` value (e.g. `G92 {X:X%.4f} ...`) | – |
+| `SET_GLOBAL_OFFSETS_COMMAND` | Set the position without moving (e.g. `G92 {X:X%.4f} ...`). As OpenPnP, only after visual homing (not built yet): a plain home doesn't send it | – |
 | `MOVE_TO_COMMAND` | A move: one variable per moving axis, `FeedRate` (mm/min), `Acceleration` (mm/s², the lowest of the moving axes × speed²) | `G1 {X:X%.4f} {Y:Y%.4f} {Z:Z%.4f} {A:A%.4f} {B:B%.4f} {C:C%.4f} F{FeedRate:%.0f}` |
 | `MOVE_TO_COMPLETE_COMMAND` | After every move; its confirmation means motion has finished | `G4 P0` (dwell 0: answered when the planner is empty) |
 | `MOVE_TO_COMPLETE_REGEX` | Waited for after `MOVE_TO_COMPLETE_COMMAND` | – |
@@ -160,7 +160,7 @@ grbl-type controllers refuse G-code (`M5`, `M65` ...) with `error:9` while they 
 | Request | Sent (grblhal profile) |
 |---|---|
 | `machine.enable` | port opens, `connect_wait`, `CONNECT_COMMAND`, `ENABLE_COMMAND`, `GET_POSITION_COMMAND`; then `machine.on_enable` (e.g. home, park), then actuators' `on_enable` values |
-| `machine.home` | `HOME_COMMAND` (or `HOME_AXIS_COMMAND` per axis), `HOME_COMPLETE_REGEX`, `SET_GLOBAL_OFFSETS_COMMAND`, `GET_POSITION_COMMAND`; then `machine.on_home` |
+| `machine.home` | `HOME_COMMAND` (or `HOME_AXIS_COMMAND` per axis), `HOME_COMPLETE_REGEX`, `GET_POSITION_COMMAND`; then `machine.on_home` |
 | `motion.move_to` | `MOVE_TO_COMMAND`, `MOVE_TO_COMPLETE_COMMAND` (with `?` every `position_poll` meanwhile), `MOVE_TO_COMPLETE_REGEX`; once per step (safe Z, X/Y, Z) |
 | `machine.stop` | the `stop` bytes at once, from any thread; the running request fails with `stopped`; machine goes to `after_stop` |
 | `machine.disable` | actuators' `on_disable`, `DISABLE_COMMAND`; the machine is not homed any more |

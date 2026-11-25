@@ -129,10 +129,14 @@ async def machine_enable(ctx: "Connection") -> dict:
     return {}
 
 
-@rpc.method("machine.disable")
+@rpc.method("machine.disable", immediate=True)
 async def machine_disable(ctx: "Connection") -> dict:
-    """Actuators to their on_disable values, drivers disabled (motors released); the machine must be homed again."""
-    await _run(ctx, ctx.app_state.machine.disable)
+    """Actuators to their on_disable values, drivers disabled (motors released); the machine must be homed again.
+    As OpenPnP's power button: it overtakes the queue, and a move or queued requests are stopped first."""
+    machine = ctx.app_state.machine
+    if machine.busy():
+        machine.stop("disabled")
+    await _run(ctx, machine.disable)
     return {}
 
 
@@ -148,6 +152,13 @@ def machine_stop(ctx: "Connection", reason: str | None = None) -> dict:
     """Abort motion now; queued requests fail with `stopped`."""
     ctx.app_state.machine.stop(reason)
     return {}
+
+
+@rpc.method("machine.set_speed", immediate=True)
+def machine_set_speed(ctx: "Connection", speed: float) -> dict:
+    """The global speed factor, 0.01..1 (OpenPnP's speed slider): every move after this (jogs, Go, jobs) runs at
+    this fraction of its feed, also × the part speed while a nozzle carries a part (never below 5 %)."""
+    return {"speed": ctx.app_state.machine.set_speed(speed)}
 
 
 @rpc.method("machine.clear_alarm")
@@ -171,6 +182,21 @@ def machine_select_tool(ctx: "Connection", object: str) -> dict:
     ctx.app_state.machine.planner.resolve(object)
     machine.state.update(selected_tool=object)
     return {}
+
+
+@rpc.method("camera.center_on")
+async def camera_center_on(ctx: "Connection", camera: str, x: float, y: float, nozzle: str | None = None) -> dict:
+    """Shift+click in a camera view (as OpenPnP): bring what is seen at machine X/Y to the picture's centre. A head
+    camera moves there; on a machine camera the nozzle moves (no safe Z within the camera's roaming_radius)."""
+    machine = ctx.app_state.machine
+    cam = _camera(ctx, camera)
+    n = machine.planner.resolve(nozzle) if nozzle else None
+
+    def move():
+        loc = machine.planner.center_on(cam, {"x": float(x), "y": float(y)}, n)
+        machine.planner.user_action(n or cam, jogging=False)
+        return loc
+    return {"location": await _run(ctx, move)}
 
 
 @rpc.method("motion.move_to")
@@ -238,7 +264,7 @@ def motion_jog_cancel(ctx: "Connection") -> dict:
 
 @rpc.method("motion.park")
 async def motion_park(ctx: "Connection", head: str | None = None, axes: str = "all") -> dict:
-    """Safe Z, then the head's camera to machine.park.location (axes: xy, z or all)."""
+    """Safe Z, then the head to machine.park.location (head X/Y in machine coordinates; axes: xy, z or all)."""
     h = _head(ctx, head)
     return {"location": await _run(ctx, ctx.app_state.machine.planner.park, h, axes)}
 
@@ -325,9 +351,56 @@ async def camera_snapshot(ctx: "Connection", id: str, overlay: str | None = None
 
 @rpc.method("camera.devices", read_only=True)
 def camera_devices(ctx: "Connection") -> list:
-    """Video devices on the server, with USB serial, vendor:product, name and stable paths, to pick in setup."""
-    from ..core.cameras import list_devices
-    return list_devices()
+    """Video devices on the server, with USB serial, vendor:product, name and stable paths, to pick in setup.
+    `used_by`: the configured cameras whose device selector picks this device (same rule as when opening)."""
+    from ..core.cameras import list_devices, resolve_device
+    from ..core.errors import MachineError
+    used: dict[str, list[str]] = {}
+    for o in ctx.app_state.machine.config.of_kind("camera"):
+        sel = getattr(o.settings, "device", None)
+        if sel is None:
+            continue
+        try:
+            path = resolve_device(sel)[0]
+        except MachineError:
+            continue
+        used.setdefault(path, []).append(f"{o.head}/{o.id}" if o.head else o.id)
+    return [{**d, "used_by": used.get(d["path"], [])} for d in list_devices()]
+
+
+@rpc.method("camera.calibrate")
+async def camera_calibrate(ctx: "Connection", camera: str, nozzle: str | None = None, save: bool = True) -> dict:
+    """Advanced camera calibration (as OpenPnP's): the nozzle tip walks radial lines through an up-looking camera's
+    view at two heights, or a head camera walks over the two calibration fiducials; lens distortion, tilt, distance
+    and mm/px are fitted. Saved as the camera's model
+    (camera_calibration/<id>); calibration.enabled in the camera's settings switches the correction on."""
+    from ..core.camera_calibration import calibrate_camera
+    machine = ctx.app_state.machine
+    cam = _camera(ctx, camera)
+    n = _nozzle(ctx, nozzle) if nozzle else None
+    machine.planner.require_ready()
+    model = await _run(ctx, calibrate_camera, machine, cam, n)
+    if save:
+        machine.state_store.state_set(f"camera_calibration/{cam.id}", model)
+        cam.__dict__.pop("_cal_maps", None)
+    return model
+
+
+@rpc.method("camera.calibration", read_only=True)
+def camera_calibration(ctx: "Connection", camera: str) -> dict | None:
+    """The camera's advanced calibration model, or null; `active`: whether frames are corrected with it."""
+    cam = _camera(ctx, camera)
+    model = cam.calibration_model()
+    return {**model, "active": cam.calibration_active()} if model else None
+
+
+@rpc.method("camera.reset_calibration")
+def camera_reset_calibration(ctx: "Connection", camera: str) -> dict:
+    """Forget the camera's advanced calibration model (frames are no longer corrected)."""
+    cam = _camera(ctx, camera)
+    ctx.app_state.machine.state_store.state_set(f"camera_calibration/{cam.id}", None)
+    cam.__dict__.pop("_cal_maps", None)
+    return {}
 
 
 @rpc.method("camera.controls", read_only=True)
@@ -614,7 +687,7 @@ async def nozzle_calibrate_tip(ctx: "Connection", nozzle: str, camera: str | Non
     from ..core.calibration import calibrate_nozzle_tip
     machine = ctx.app_state.machine
     n = _nozzle(ctx, nozzle)
-    if not n.settings.tip:
+    if not n.tip_id():
         raise RpcError("invalid_params", f"{n.name} has no tip set (nozzle setting tip)")
     if n.status().get("part"):
         raise RpcError("busy", f"{n.name} holds a part")
@@ -627,9 +700,31 @@ async def nozzle_calibrate_tip(ctx: "Connection", nozzle: str, camera: str | Non
     machine.planner.require_ready()
     cal = await _run(ctx, calibrate_nozzle_tip, machine, n, cam, angles, bore)
     if save:
-        machine.state_store.state_set(f"tip_calibration/{n.settings.tip}", cal)
+        machine.state_store.state_set(n.calibration_key(), cal)
         n.update(calibration={"runout": cal["runout"], "phase": cal["phase"]})
-    return cal
+    # as OpenPnP, compensation needs calibration enabled on the tip (nozzle_tips.<tip>.calibration.enabled)
+    return {**cal, "compensated": n.runout_enabled()}
+
+
+@rpc.method("nozzle.load_tip")
+async def nozzle_load_tip(ctx: "Connection", nozzle: str, tip: str, manual: bool = False) -> dict:
+    """Change the nozzle's tip (as OpenPnP's tool changer): the loaded one back into its holder, then `tip` out of
+    its holder. A tip without changer locations is changed by hand: manual=true records that it was done."""
+    from ..core.pnp import load_tip
+    n = _nozzle(ctx, nozzle)
+    if not manual:
+        ctx.app_state.machine.planner.require_ready()
+    return await _run(ctx, load_tip, ctx.app_state.machine, n, tip, manual)
+
+
+@rpc.method("nozzle.unload_tip")
+async def nozzle_unload_tip(ctx: "Connection", nozzle: str, manual: bool = False) -> dict:
+    """Put the nozzle's tip back into its holder (manual=true: it was taken off by hand)."""
+    from ..core.pnp import unload_tip
+    n = _nozzle(ctx, nozzle)
+    if not manual:
+        ctx.app_state.machine.planner.require_ready()
+    return await _run(ctx, unload_tip, ctx.app_state.machine, n, manual)
 
 
 @rpc.method("nozzle.tip_calibration", read_only=True)
@@ -642,8 +737,9 @@ def nozzle_tip_calibration(ctx: "Connection", nozzle: str) -> dict | None:
 def nozzle_reset_tip_calibration(ctx: "Connection", nozzle: str) -> dict:
     """Forget the loaded tip's runout calibration (no compensation)."""
     n = _nozzle(ctx, nozzle)
-    if n.settings.tip:
-        ctx.app_state.machine.state_store.state_set(f"tip_calibration/{n.settings.tip}", None)
+    if n.tip_id():
+        ctx.app_state.machine.state_store.state_set(n.calibration_key(), None)
+        ctx.app_state.machine.state_store.state_set(f"tip_calibration/{n.tip_id()}", None)   # older, per tip
     n.update(calibration=None)
     return {}
 
@@ -809,6 +905,10 @@ def _check_enabled(ctx: "Connection", paths: list[str]) -> bool:
 def _apply_result(ctx: "Connection", result, live: bool = False) -> dict:
     """Rebuild the machine from the new configuration (or apply calibration values live) and tell every client."""
     app = ctx.app_state
+    stale: set[str] = set()
+    if result.applied:
+        from ..core.calibration import stale_tip_calibrations
+        stale = stale_tip_calibrations(app.machine.config.data, result.config.data)
     if result.applied and live:
         app.machine.apply_live(result.config)
         app.notify_all("notify_config_changed", {"revision": result.revision, "paths": result.paths,
@@ -817,8 +917,14 @@ def _apply_result(ctx: "Connection", result, live: bool = False) -> dict:
         app.replace_machine(Machine(result.config, app.machine.registry))
         app.notify_all("notify_config_changed", {"revision": result.revision, "paths": result.paths,
                                                  "client": _client_name(ctx)})
+    warnings = list(result.warnings)
+    if stale:
+        from ..core.calibration import reset_tip_calibrations
+        if reset_tip_calibrations(app.machine, stale):
+            warnings.append("nozzle tip calibrations reset (" + ("the up-looking camera changed" if "*" in stale
+                            else "nozzle offsets changed: " + ", ".join(sorted(stale))) + "): calibrate again")
     return {"revision": result.revision, "applied": result.applied,
-            "restart_required": result.restart_required, "warnings": result.warnings}
+            "restart_required": result.restart_required, "warnings": warnings}
 
 
 def _edit_error(exc: ConfigEditError) -> RpcError:
@@ -864,11 +970,12 @@ def config_capture_helpers(ctx: "Connection") -> list:
              "description": "Where the object really is now (the position is read back from the controller): "
                             "e.g. a bottom camera's location = the nozzle centred over it, in focus"},
             {"name": "units_per_pixel", "args": {"camera": "camera id (up-looking, machine-mounted)",
-                                                 "object": "nozzle/<id>, in focus over the camera",
+                                                 "object": "nozzle/<id> (moved to the camera's location)",
                                                  "distance": "mm to move in X and Y (default 1)"},
-             "description": "Moves the nozzle by `distance` in X and in Y at the same height and measures how far "
-                            "the image moved (template matching). Returns mm per pixel, plus whether the image is "
-                            "mirrored or rotated. The nozzle ends where it started"}]
+             "description": "Moves the nozzle to the camera's location (safe Z, then X/Y, then down to the focus Z), "
+                            "then by `distance` in X and in Y at that height, and measures how far the image moved "
+                            "(template matching). Returns mm per pixel, plus whether the image is mirrored or "
+                            "rotated. The nozzle ends at the camera's location"}]
 
 
 @rpc.method("config.capture")

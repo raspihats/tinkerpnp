@@ -72,10 +72,10 @@ settings. Types come from a registry: built-in types plus plugins (Python entry 
 | Axis | `controller`, `virtual`, `mapped` (linear map), `cam` (CW/CCW), `linear_transform` | ReferenceControllerAxis, ReferenceVirtualAxis, ReferenceMappedAxis, ReferenceCam*Axis, ReferenceLinearTransformAxis |
 | Head | `head` | ReferenceHead |
 | Nozzle | `nozzle` | ReferenceNozzle |
-| Nozzle tip | `nozzle_tip` (incl. changer locations) | ReferenceNozzleTip |
+| Nozzle tip | `nozzle_tip` (changer locations planned: B4) | ReferenceNozzleTip |
 | Actuator | `gcode`, `python` (any callable), `http`, `script` | ReferenceActuator, HttpActuator, ScriptActuator |
 | Camera | `v4l2` (OpenCV/V4L2 USB), `mjpeg_url`, `image` (static), `simulated` | OpenPnpCaptureCamera, Webcam, ImageCamera, Simulated*Camera |
-| Feeder | `strip`, `tray`, `tube`, `push_pull` (actuator driven), `servo` (plugin), `auto` (G-code/actuator), `rotated_tray` | ReferenceStripFeeder, ReferenceTrayFeeder, ReferenceTubeFeeder, ReferencePushPullFeeder, ReferenceAutoFeeder, ReferenceRotatedTrayFeeder |
+| Feeder | built: `static`, `strip`, `tray`, `auto` (G-code/actuator); planned: `tube`, `push_pull`, `servo` (plugin), `rotated_tray` | ReferenceStripFeeder, ReferenceTrayFeeder, ReferenceTubeFeeder, ReferencePushPullFeeder, ReferenceAutoFeeder, ReferenceRotatedTrayFeeder |
 | Vision | `pipeline` (stage list, like CvPipeline) | CvPipeline |
 | Signaler | `actuator`, `sound` | ActuatorSignaler, SoundSignaler |
 

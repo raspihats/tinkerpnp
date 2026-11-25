@@ -341,3 +341,53 @@ def test_macro_steps_are_validated():
         build_config(data, EXAMPLE)
     paths = [p.path for p in e.value.problems]
     assert paths == ["machine.macros.bad[0].move_to.object", "machine.macros.bad[1]"]
+
+
+def test_openpnp_command_variables_and_delay():
+    """OpenPnP's MOVE_TO extras ({XL}, {XF}, {XIncreasing}), HOME_COMMAND with the home coordinates, DELAY_COMMAND
+    for dwells, deprecated command names accepted, {IntegerValue} truncated as Java's (int)."""
+    machine = make(remove_comments=True, commands={
+        "MOVE_TO_COMMAND": "G1 {XL}{X:%.1f} {YL}{Y:%.1f} {Z:Z%.1f} ; XF{XF:%.1f} {XIncreasing:up}{XDecreasing:down}",
+        "HOME_COMMAND": "$H ; {XL}{X:%.0f} {ZL}{Z:%.0f} F{FeedRate:%.0f}",
+        "DELAY_COMMAND": "G4 P{TimeSeconds:%.3f}",
+        "PUMP_ON_COMMAND": "M3",                     # deprecated in OpenPnP: loads, isn't sent
+    })
+    from tinkerpnp.core.gcode import render
+    drv = machine.get("driver", "grbl")
+    rendered = []
+    real = drv.command
+
+    def recording(name, variables=None, *a, **kw):
+        if drv.commands.get(name):
+            rendered.append(render(drv.commands[name], variables or {}))
+        return real(name, variables, *a, **kw)
+    drv.command = recording
+    try:
+        run(machine, machine.enable)
+        assert any(r.startswith("$H ; X0 Z0 F") for r in rendered)
+        rendered.clear()
+        run(machine, machine.planner.move_to, machine.get("nozzle", "N1"), {"y": 120}, 1.0, "none")
+        assert rendered[0].startswith("G1 Y120.0 ; XF1.0")              # X not moving: only XF
+        rendered.clear()
+        run(machine, machine.planner.move_to, machine.get("nozzle", "N1"), {"x": 50}, 1.0, "none")
+        assert rendered[0].startswith("G1 X50.0 ; XF50.0 up")
+        from tinkerpnp.core.pnp import _dwell
+        fake(machine).received.clear()
+        run(machine, _dwell, machine, 250)
+        assert fake(machine).received == ["G4 P0.250"]
+        assert drv.commands.get("PUMP_ON_COMMAND") == "M3"
+    finally:
+        machine.close()
+    assert render("S{IntegerValue}", {"IntegerValue": int(2.9)}) == "S2"
+
+
+def test_position_report_is_read_by_letter_without_letter_variables():
+    """OpenPnP reads the position report by axis letter even when templates use X/Y/Z/Rotation."""
+    machine = make(letter_variables=False)
+    try:
+        run(machine, machine.enable)
+        drv = machine.get("driver", "grbl")
+        drv._position_report(__import__("re").match(r"(?P<X>[\d.]+),(?P<A>[\d.]+)", "12.5,33.0"))
+        assert pos(machine, "x") == 12.5 and pos(machine, "a") == 33.0
+    finally:
+        machine.close()

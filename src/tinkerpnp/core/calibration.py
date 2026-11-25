@@ -21,12 +21,8 @@ from .errors import MachineError
 
 
 def _frame_after_move(camera: Any, settle: float) -> Any:
-    """A frame taken after the move has finished and the image settled."""
-    time.sleep(settle)
-    got = camera.wait_frame(camera._seq, 5.0)
-    if got is None:
-        raise MachineError("driver_error", f"{camera.name}: no frame")
-    return got[1]
+    """A frame taken after the move has finished and the image settled (s; the camera's light on first)."""
+    return camera.capture(settle * 1000.0)
 
 
 def _gray(frame: Any) -> Any:
@@ -75,13 +71,21 @@ def _shift(reference: Any, moved: Any, template_size: float) -> tuple[float, flo
 def measure_units_per_pixel(machine: Any, camera: Any, nozzle: Any, distance: float = 1.0, settle: float = 0.4,
                             template_size: float = 0.15, min_score: float = 0.6, linearity: float = 0.15,
                             takeup: float = 0.3) -> dict:
-    """Run on the motion thread. The nozzle must be over the camera and in focus; it ends where it started."""
+    """Run on the motion thread. As OpenPnP's camera calibration, the nozzle first goes to the camera's location (safe
+    Z, then X/Y, then down to the focus Z there): measuring wherever the nozzle happens to be (e.g. up at safe Z,
+    out of focus) matches whatever else moves with the head and gives a wrong but consistent-looking scale (bench,
+    2026-11-25). It ends at the camera's location."""
     if camera.settings.looking != "up" or camera.head is not None:
         raise MachineError("invalid_params", f"{camera.name}: only machine-mounted, up-looking cameras")
     if not 0.05 <= distance <= 10:
         raise MachineError("invalid_params", "distance must be 0.05..10 mm")
+    loc = camera.settings.location
+    if loc is None or None in (loc.x, loc.y, loc.z):
+        raise MachineError("invalid_params", f"{camera.name}: set the camera's location (X, Y and the Z where the "
+                                             "nozzle tip is in focus) first: units per pixel are measured there")
     planner = machine.planner
-    start = planner.location(nozzle)
+    start = {"x": loc.x, "y": loc.y, "z": loc.z}
+    planner.move_to(nozzle, start)               # safe Z first, then X/Y, then down into focus
     camera.acquire()
     try:
         shifts, points = {}, {}
@@ -129,6 +133,7 @@ def measure_units_per_pixel(machine: Any, camera: Any, nozzle: Any, distance: fl
         "value": {"x": round(distance / len_x, 6), "y": round(distance / len_y, 6)},
         "details": {
             "distance_mm": distance,
+            "at": start,                      # the camera's location: where the nozzle was measured (and is now)
             "pixels_for_x": [round(xx, 2), round(xy, 2)],
             "pixels_for_y": [round(yx, 2), round(yy, 2)],
             "match": [round(sx, 3), round(sy, 3)],
@@ -187,7 +192,11 @@ def calibrate_nozzle_tip(machine: Any, nozzle: Any, camera: Any, angles: int = 1
     planner = machine.planner
     settle_s = (camera.settings.settle if settle is None else settle) / 1000.0
     # measure the plain axis: switch compensation off while calibrating
-    state_key = f"tip_calibration/{nozzle.settings.tip}" if nozzle.settings.tip else None
+    state_key = nozzle.calibration_key()
+    tip = machine.objects.get(f"nozzle_tip/{nozzle.tip_id()}") if nozzle.tip_id() else None
+    tip_cal = tip.settings.calibration if tip is not None else None
+    threshold = tip_cal.offset_threshold if tip_cal else 0.5
+    allowed_misses = tip_cal.allow_misdetections if tip_cal else 0
     old = machine.state_store.state_get(state_key) if state_key else None
     if old:
         machine.state_store.state_set(state_key, {**old, "enabled": False})
@@ -200,14 +209,13 @@ def calibrate_nozzle_tip(machine: Any, nozzle: Any, camera: Any, angles: int = 1
         for i in range(angles):
             angle = -180.0 + 360.0 * i / angles
             planner.move_to(nozzle, {"rotation": angle}, safe_z="none")
-            time.sleep(settle_s)
-            got = camera.wait_frame(camera._seq, 5.0)
-            if got is None:
-                raise MachineError("driver_error", f"{camera.name}: no frame")
-            result = run_pipeline(got[1], TIP_PIPELINE, upp, {"diameter": bore})
-            if not result["detections"]:
+            frame = camera.capture(None if settle is None else settle_s * 1000.0)
+            result = run_pipeline(frame, TIP_PIPELINE, upp, {"diameter": bore})
+            found = [_image_to_offset(d, result["image_size"], upp) for d in result["detections"]]
+            found = [f for f in found if math.hypot(*f) <= threshold]      # as OpenPnP: offset threshold
+            if len(found) != 1:                                             # none, or ambiguous: discarded
                 continue
-            dx, dy = _image_to_offset(result["detections"][0], result["image_size"], upp)
+            dx, dy = found[0]
             points.append((dx, dy))
             used.append(angle)
         planner.move_to_safe_z(nozzle.head)
@@ -215,17 +223,59 @@ def calibrate_nozzle_tip(machine: Any, nozzle: Any, camera: Any, angles: int = 1
         camera.release()
         if old:
             machine.state_store.state_set(state_key, old)
-    if len(points) < max(5, angles // 2):
-        raise MachineError("vision_failed", f"found the tip in {len(points)} of {angles} pictures; is the nozzle in "
-                                            "focus over the camera, with the bore visible?",
+    if len(points) < max(5, angles - allowed_misses):
+        raise MachineError("vision_failed", f"found the tip in {len(points)} of {angles} pictures (allowed misses: "
+                                            f"{allowed_misses}); is the nozzle in focus over the camera, with the "
+                                            "bore visible, within the offset threshold?",
                            result={"found": len(points)})
     cx, cy, r = fit_circle(points)
     # phase: where the tip is (relative to the axis) at rotation 0, as an angle
     phases = [math.atan2(py - cy, px - cx) - math.radians(a) for (px, py), a in zip(points, used)]
     phase = math.degrees(math.atan2(sum(math.sin(p) for p in phases), sum(math.cos(p) for p in phases)))
     residual = max(abs(math.hypot(px - cx, py - cy) - r) for px, py in points)
-    return {"tip": nozzle.settings.tip, "nozzle": nozzle.id, "camera": camera.id, "runout": round(r, 4),
+    return {"tip": nozzle.tip_id(), "nozzle": nozzle.id, "camera": camera.id, "runout": round(r, 4),
             "phase": round(phase, 2), "axis_offset": {"x": round(cx, 4), "y": round(cy, 4)},
             "residual": round(residual, 4), "angles": len(used),
             "points": [[round(a, 1), round(px, 4), round(py, 4)] for (px, py), a in zip(points, used)],
             "time": time.time(), "enabled": True}
+
+
+# ── when a tip calibration is no longer valid ──────────────────────────────────────────────────────────────────────
+
+def stale_tip_calibrations(old: dict, new: dict) -> set[str]:
+    """As OpenPnP, a runout calibration is reset when what it was measured with changes: the up-looking camera's
+    view (location, transform, units per pixel) resets all of them, a nozzle's X/Y offset resets that nozzle's.
+    `old` / `new`: plain configuration data. Returns nozzle ids ("*" = all)."""
+    def up_cameras(cfg: dict) -> dict:
+        return {k: {f: v.get(f) for f in ("location", "transform", "units_per_pixel", "device", "calibration")}
+                for k, v in (cfg.get("cameras") or {}).items() if isinstance(v, dict) and v.get("looking") == "up"}
+
+    def nozzle_offsets(cfg: dict) -> dict:
+        out = {}
+        for head in (cfg.get("heads") or {}).values():
+            for nid, n in ((head or {}).get("nozzles") or {}).items():
+                off = (n or {}).get("offset") or {}
+                out[nid] = (off.get("x"), off.get("y"))
+        return out
+
+    if up_cameras(old) != up_cameras(new):
+        return {"*"}
+    a, b = nozzle_offsets(old), nozzle_offsets(new)
+    return {nid for nid in a.keys() & b.keys() if a[nid] != b[nid]}
+
+
+def reset_tip_calibrations(machine: Any, nozzle_ids: set[str]) -> list[str]:
+    """Forget the runout calibrations of these nozzles ("*" = all). Returns the keys that were set."""
+    reset = []
+    tips = [t.id for t in machine.of_kind("nozzle_tip")]
+    for n in machine.of_kind("nozzle"):
+        if "*" not in nozzle_ids and n.id not in nozzle_ids:
+            continue
+        for tip in tips:
+            for key in (n.calibration_key(tip), f"tip_calibration/{tip}"):
+                cal = machine.state_store.state_get(key)
+                if cal and (key != f"tip_calibration/{tip}" or cal.get("nozzle") == n.id):
+                    machine.state_store.state_set(key, None)
+                    reset.append(key)
+        n.update(calibration=None)
+    return reset

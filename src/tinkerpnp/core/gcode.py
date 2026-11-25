@@ -36,7 +36,8 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "HOME_COMMAND": ("command", "Home all axes"),
     "HOME_AXIS_COMMAND": ("command", "TinkerPnP: home one axis ({Letter}); without it, homing some axes homes all"),
     "HOME_COMPLETE_REGEX": ("regex", "Wait for this line after HOME_COMMAND"),
-    "SET_GLOBAL_OFFSETS_COMMAND": ("command", "After homing: set the axes to their home positions (e.g. G92)"),
+    "SET_GLOBAL_OFFSETS_COMMAND": ("command", "Set the position without moving (e.g. G92). As OpenPnP: only after "
+                                              "visual homing (not built yet), never after a plain home"),
     "MOVE_TO_COMMAND": ("command", "A move; variables per axis, FeedRate, Acceleration"),
     "MOVE_TO_COMPLETE_COMMAND": ("command", "Answered when motion has finished (e.g. G4 P0 on grbl, M400 on Marlin)"),
     "MOVE_TO_COMPLETE_REGEX": ("regex", "Wait for this line after MOVE_TO_COMPLETE_COMMAND"),
@@ -51,6 +52,15 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "ACTUATE_STRING_COMMAND": ("command", "For actuators without set: {StringValue}"),
     "ACTUATOR_READ_COMMAND": ("command", "For actuators without read"),
     "ACTUATOR_READ_REGEX": ("regex", "For actuators without read_regex: group Value"),
+    "DELAY_COMMAND": ("command", "Dwell in the controller's queue (pick/place dwells): {TimeMS}, {TimeSeconds}, "
+                                 "e.g. G4 P{TimeSeconds:%.3f}. Without it the host waits"),
+    # OpenPnP's deprecated commands: accepted so its configurations load; not sent
+    "POST_VISION_HOME_COMMAND": ("command", "OpenPnP (deprecated): not used"),
+    "PUMP_ON_COMMAND": ("command", "OpenPnP (deprecated, use a pump actuator): not used"),
+    "PUMP_OFF_COMMAND": ("command", "OpenPnP (deprecated, use a pump actuator): not used"),
+    "PICK_COMMAND": ("command", "OpenPnP (deprecated, use a vacuum actuator): not used"),
+    "PLACE_COMMAND": ("command", "OpenPnP (deprecated, use a vacuum actuator): not used"),
+    "ACTUATOR_READ_WITH_DOUBLE_COMMAND": ("command", "OpenPnP (deprecated): not used"),
 }
 
 PROFILE_FIELDS = ("settle", "letter_variables", "backslash_escapes", "line_ending", "connect_wait", "timeout", "home_timeout",
@@ -244,9 +254,10 @@ class GcodeDriverSettings(Settings):
     home_timeout: DurationMs | None = Field(None, description="Timeout for homing")
     move_timeout: DurationMs | None = Field(None, description="Timeout for a move; default: expected time + timeout")
     max_feed: Speed | None = Field(None, description="Cap on the feed rate of any move")
-    motion_control: Literal["toolpath", "slowest_axis"] | None = Field(
-        None, description="toolpath: the fastest feed along the path at which no axis exceeds its own feed; "
-                          "slowest_axis: the lowest feed of the moving axes")
+    motion_control: Literal["toolpath", "euclidean_axis_limits", "toolpath_feed_rate", "slowest_axis"] | None = Field(
+        None, description="toolpath (= OpenPnP's euclidean_axis_limits): the fastest feed along the path at which "
+                          "no axis exceeds its own feed; toolpath_feed_rate (OpenPnP's ToolpathFeedRate): max_feed "
+                          "whatever the axes allow; slowest_axis: the lowest feed of the moving axes")
     realtime: list[str] | None = Field(None, description="Commands sent as bytes without line ending and without "
                                                          "waiting for a confirmation (grbl: ?, !, ~)")
     stop: list[str] | None = Field(None, description="Sent in order on machine.stop, as bytes, without waiting")
@@ -394,7 +405,13 @@ class GcodeDriver(DriverBase):
         values = {k: float(v) for k, v in m.groupdict().items() if v is not None}
         self._last_position = values
         self._position_seen.set()
-        positions = {a.id: values[self.var_name(a)] for a in self.axes() if self.var_name(a) in values}
+        # as OpenPnP: the report is read by axis letter, whatever letter_variables says
+        positions = {}
+        for a in self.axes():
+            for name in (a.settings.letter, self.var_name(a)):
+                if name in values:
+                    positions[a.id] = values[name]
+                    break
         if positions:
             self.machine.set_axis_positions(positions)
 
@@ -533,11 +550,19 @@ class GcodeDriver(DriverBase):
                 self.command("HOME_AXIS_COMMAND", {"Letter": a.settings.letter, "Id": a.id}, timeout)
         else:
             axes = mine
-            self.command("HOME_COMMAND", None, timeout)
+            # as OpenPnP: the home coordinates, letters ({XL}) and the lowest feed/acceleration of the axes
+            feeds = [a.settings.feed for a in axes if a.settings.feed]
+            accels = [a.settings.acceleration for a in axes if a.settings.acceleration]
+            home_vars: dict[str, Any] = {"FeedRate": min(feeds) if feeds else None,
+                                         "Acceleration": min(accels) if accels else None}
+            for a in axes:
+                home_vars[self.var_name(a)] = a.settings.home
+                home_vars[f"{self.var_name(a)}L"] = a.settings.letter
+            self.command("HOME_COMMAND", home_vars, timeout)
         if "HOME_COMPLETE_REGEX" in self.regex:
             self._wait_for(self.regex["HOME_COMPLETE_REGEX"], timeout, "HOME_COMPLETE_REGEX")
-        home_vars = {self.var_name(a): a.settings.home for a in axes}
-        self.command("SET_GLOBAL_OFFSETS_COMMAND", home_vars)
+        # no SET_GLOBAL_OFFSETS_COMMAND here: OpenPnP sends it only after visual homing (with grbl a G92 would split
+        # the work position from MPos, the machine position that the position report reads)
         if self.read_position() is None:
             self.machine.set_axis_positions({a.id: a.settings.home for a in axes})
         for a in axes:
@@ -555,6 +580,8 @@ class GcodeDriver(DriverBase):
             feed = None
         elif self.opt["motion_control"] == "slowest_axis":
             feed = min(feeds.values())
+        elif self.opt["motion_control"] == "toolpath_feed_rate":     # OpenPnP's ToolpathFeedRate: the driver's
+            feed = self.settings.max_feed or max(feeds.values())       # max feed, whatever the axes allow
         else:
             length = math.sqrt(sum(d * d for d in deltas.values()))
             feed = min(f * length / deltas[a] for a, f in feeds.items())
@@ -562,10 +589,26 @@ class GcodeDriver(DriverBase):
             feed = min(feed, self.settings.max_feed) if feed else self.settings.max_feed
         return None if feed is None else feed * speed * 60.0
 
+    def delay(self, ms: float) -> bool:
+        """DELAY_COMMAND (the dwell runs in the controller's queue, as OpenPnP). False if not configured."""
+        if not self.commands.get("DELAY_COMMAND"):
+            return False
+        self.command("DELAY_COMMAND", {"TimeMS": ms, "TimeSeconds": ms / 1000.0}, self.opt["timeout"] + ms)
+        return True
+
     def move(self, targets: dict[ControllerAxis, float], speed: float) -> None:
         feed = self.feed_rate(targets, speed)
         accels = [a.settings.acceleration for a in targets if a.settings.acceleration]
         variables: dict[str, Any] = {self.var_name(a): v for a, v in targets.items()}
+        # OpenPnP's extra variables: {XL} the letter, {XF} forced (every axis of this driver, moving or not),
+        # {XIncreasing} / {XDecreasing} the direction (for backlash tricks)
+        for a in self.axes():
+            name = self.var_name(a)
+            variables[f"{name}F"] = targets.get(a, a.position)
+            if a in targets:                       # as OpenPnP: {XL} only with the axis in the move
+                variables[f"{name}L"] = a.settings.letter
+                variables[f"{name}Increasing"] = True if targets[a] > a.position else None
+                variables[f"{name}Decreasing"] = True if targets[a] < a.position else None
         variables["FeedRate"] = feed
         variables["Acceleration"] = min(accels) * speed * speed if accels else None
         self.command("MOVE_TO_COMMAND", variables)
@@ -588,7 +631,7 @@ class GcodeDriver(DriverBase):
                      "BooleanValue": value if isinstance(value, bool) else None,
                      "DoubleValue": float(value) if isinstance(value, (int, float)) and not isinstance(value, bool)
                      else None,
-                     "IntegerValue": int(round(value)) if isinstance(value, (int, float)) and not isinstance(value, bool)
+                     "IntegerValue": int(value) if isinstance(value, (int, float)) and not isinstance(value, bool)
                      else None,
                      "StringValue": value if isinstance(value, str) else None}
         if isinstance(value, bool):
@@ -694,6 +737,8 @@ def _value(m: re.Match) -> Any:
 class GcodeActuatorSettings(Settings):
     driver: str
     value: ValueType = "boolean"
+    on_value: float = Field(1.0, description="Number actuators: the value for on (OpenPnP's default on double)")
+    off_value: float = Field(0.0, description="Number actuators: the value for off (OpenPnP's default off double)")
     on: str | None = Field(None, description="G-code for true/on, e.g. M64 P0")
     off: str | None = Field(None, description="G-code for false/off, e.g. M65 P0")
     set: str | None = Field(None, description="Template for number/string values, e.g. 'M3 S{IntegerValue}'")

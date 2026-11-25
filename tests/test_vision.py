@@ -32,6 +32,7 @@ def api(m):  # noqa: F811
     cam.settings.sim_fiducials = [{**board_to_machine(REAL, f), "diameter": 1.0} for f in FIDS]
     with TestClient(create_app(m, data_path=":memory:")) as c:
         rpc = lambda method, **p: c.post(f"/api/{method.replace('.', '/')}", json=p)  # noqa: E731
+        rpc("data.parts.create", item={"id": "C0603", "height": 0.8})
         rpc("data.boards.create", item={"id": "fb", "placements": [
             *[{"id": f["id"], "type": "fiducial", "location": {"x": f["x"], "y": f["y"]}} for f in FIDS],
             {"id": "C1", "part": "C0603", "location": {"x": 10, "y": 5}}]})
@@ -60,7 +61,8 @@ def test_job_corrects_the_board_from_its_fiducials(api):
     assert fit["rotation"] == pytest.approx(0.5, abs=0.1) and fit["error_mm"] < 0.1
     # the job itself checks before the board's first placement and places C1 where it really is
     api.rpc("job.load", job_id="fj")
-    api.rpc("job.start")
+    api.app.state.tinker.machine.config.machine.park = None     # the job parks at the end: keep C1's move the last
+    assert api.rpc("job.start").status_code == 200
     import time
     for _ in range(200):
         st = api.get('/api/machine/objects/query?objects={"job":null}').json()["result"]["status"]["job"]
@@ -87,6 +89,8 @@ def test_nozzle_tip_runout_calibration_and_compensation(api):
     assert cal["runout"] == pytest.approx(0.15, abs=0.02) and cal["phase"] == pytest.approx(30, abs=6)
     assert abs(cal["axis_offset"]["x"]) < 0.03 and cal["residual"] < 0.03 and cal["angles"] == 12
     assert api.get("/api/nozzle/tip_calibration?nozzle=N1").json()["result"]["runout"] == cal["runout"]
+    assert m.get("nozzle", "N1").runout_offset(0) == (0.0, 0.0)        # as OpenPnP: off until enabled on the tip
+    m.get("nozzle_tip", "NT1").settings.calibration.enabled = True
     # compensated: the tip itself now ends up over the camera centre at any angle
     for angle in (0, 90, -135):
         api.rpc("motion.move_to", object="nozzle/N1", location={"x": 189.9, "y": 49.5, "z": 38.0, "rotation": angle})
@@ -96,3 +100,58 @@ def test_nozzle_tip_runout_calibration_and_compensation(api):
         assert math.hypot(dx, dy) < 0.04, (angle, dx, dy)
     api.rpc("nozzle.reset_tip_calibration", nozzle="N1")
     assert api.get("/api/nozzle/tip_calibration?nozzle=N1").json()["result"] is None
+
+
+def test_tip_calibration_belongs_to_the_nozzle_and_resets_with_the_camera(api):
+    """As OpenPnP: stored per tip and nozzle; reset when the up camera's view or the nozzle's offset changes."""
+    from tinkerpnp.core.calibration import stale_tip_calibrations
+    m = api.app.state.tinker.machine
+    store = m.state_store
+    n1, n2 = m.get("nozzle", "N1"), m.get("nozzle", "N2")
+    store.state_set(n1.calibration_key("NT1"), {"runout": 0.1, "phase": 0, "nozzle": "N1"})
+    n2.settings.tip = "NT1"                                   # the same tip on the other nozzle: not calibrated
+    assert n1.runout()["runout"] == 0.1 and n2.runout() is None
+    n2.settings.tip = "NT2"
+    old = m.config.data
+    cam_moved = {**old, "cameras": {**old["cameras"], "bottom": {**old["cameras"]["bottom"],
+                                                                   "location": {"x": 190, "y": 49.5, "z": 38}}}}
+    assert stale_tip_calibrations(old, cam_moved) == {"*"}
+    assert stale_tip_calibrations(old, old) == set()
+    r = api.rpc("config.update", changes=[{"op": "set", "path": "cameras.bottom.location.x", "value": 190}])
+    assert r.status_code == 200, r.json()
+    assert any("tip calibrations reset" in w for w in r.json()["result"]["warnings"])
+    assert api.app.state.tinker.machine.get("nozzle", "N1").runout() is None
+
+
+def test_tip_recalibration_after_homing(api):
+    m = api.app.state.tinker.machine
+    m.get("camera", "bottom").settings.settle = 120
+    m.get("camera", "bottom").settings.sim_runout = {"N1": {"runout": 0.12, "phase": -40}}
+    cal = m.get("nozzle_tip", "NT1").settings.calibration
+    cal.enabled, cal.recalibrate = True, "machine_home"
+    api.rpc("machine.enable")                                # enable homes: N1/NT1 is measured
+    got = m.get("nozzle", "N1").runout()
+    assert got is not None and got["runout"] == pytest.approx(0.12, abs=0.02)
+
+
+def test_a_fiducial_3_5_mm_off_is_still_found(api):
+    """As OpenPnP (4 mm search distance): a board put down by eye a few mm off is found; farther is refused."""
+    api.rpc("machine.enable")
+    real = board_to_machine(REAL, FIDS[0])
+    r = api.rpc("vision.locate_fiducial", x=real["x"] + 3.5, y=real["y"], diameter=1.0)
+    assert r.status_code == 200, r.json()
+    assert math.hypot(r.json()["result"]["x"] - real["x"], r.json()["result"]["y"] - real["y"]) < 0.05
+
+
+def test_three_fiducials_fit_scale_and_shear():
+    """As OpenPnP with 3+ fiducials: an affine fit, so a PCB stretched by 0.3 % in X is placed right."""
+    from tinkerpnp.core.jobs import board_to_machine as b2m
+    board = [(f["x"], f["y"]) for f in FIDS] + [(2, 25)]
+    stretch = lambda x, y: b2m(REAL, {"x": x * 1.003, "y": y})                     # noqa: E731
+    real = [(p["x"], p["y"]) for p in (stretch(x, y) for x, y in board)]
+    fit = fit_board(board, real)
+    assert fit["scale_x"] == pytest.approx(1.003, abs=1e-5) and fit["scale_y"] == pytest.approx(1.0, abs=1e-5)
+    assert abs(fit["shear"]) < 1e-6 and fit["error_mm"] < 1e-6
+    got = b2m({**fit, "z": 2}, {"x": 40, "y": 10})
+    want = stretch(40, 10)
+    assert math.hypot(got["x"] - want["x"], got["y"] - want["y"]) < 1e-6

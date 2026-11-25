@@ -19,8 +19,8 @@ snapshots, device controls and a list of the video devices on the server.
 | `axes` | Head-mounted: the camera's own `z` and `rotation` axes (usually virtual) | – |
 | `units_per_pixel` | mm per pixel in X and Y, **after** the transform | – |
 | `transform.crop` | `{x, y, width, height}`: the part of the sensor image to keep | none |
-| `transform.rotate` | 0, 90, 180 or 270 degrees clockwise | 0 |
-| `transform.flip_x` / `flip_y` | Mirror left-right / top-bottom | false |
+| `transform.rotate` | Degrees **counter-clockwise**, any angle, as OpenPnP (other than 90° steps the image grows to its bounding box) | 0 |
+| `transform.flip_x` / `flip_y` | As OpenPnP's flipX / flipY: `flip_x` flips about the X axis (**top-bottom**, "Flip Vertical"), `flip_y` about the Y axis (**left-right**, "Flip Horizontal") | false |
 | `idle_close` | Close the device this long after the last viewer left; 0 = keep it open once opened | 10000 ms |
 | `jpeg_quality` | For streams and snapshots | 80 |
 | `stream_fps` | Default frame rate of MJPEG streams (a client can ask for less) | 15 |
@@ -48,7 +48,7 @@ cameras:
   bottom:
     type: v4l2
     looking: up
-    device:                          # tried in this order; the first present device wins
+    device:                          # all of these must fit the same camera; the path decides between look-alikes
       usb_serial: "20131107"
       usb_id: "0c45:6340"
       path: /dev/v4l/by-path/platform-xhci-hcd.0-usb-0:1.2:1.0-video-index0
@@ -60,10 +60,15 @@ cameras:
 
 | Setting | Meaning | Default |
 |---|---|---|
-| `device.usb_serial` | USB serial number: follows the camera to any port. Some cheap cameras share one serial (e.g. `SN0001`); combine with `usb_id` | – |
-| `device.usb_id` | `vendor:product`: the first camera of that model | – |
+| `device.usb_serial` | USB serial number: follows the camera to any port. Some cheap cameras share one serial (e.g. `SN0001`): then add `path` | – |
+| `device.usb_id` | `vendor:product` (the camera model) | – |
 | `device.name` | The name the driver reports (`USB 2.0 Camera`) | – |
 | `device.path` | `/dev/videoN`, or a stable `/dev/v4l/by-path/...` (a USB port) or `/dev/v4l/by-id/...` link | – |
+
+Every selector that is set must fit the same camera. When several cameras fit (two of one model with the same serial),
+the one at `path` is used; if none of them is at `path`, the camera is not opened rather than guessing, since a guess
+could swap the two. A camera that is the only one fitting is found even in another port. With `usb_id` or `name`
+alone and several cameras fitting, the first is used.
 | `format` | `width`, `height`, `fps`, `pixel_format` (FourCC: `MJPG` uses far less USB bandwidth than `YUYV`) | required |
 | `controls` | V4L2 controls set after opening, named as `v4l2-ctl --list-ctrls` shows them. Booleans and on/off are 1/0 | `{}` |
 | `buffer_size` | Driver frame buffers; 1 = always the newest frame (no lag) | 1 |
@@ -138,8 +143,28 @@ browser. Vision, measurements and clicks in the picture still use full-resolutio
 
 Vision on up-looking cameras (tip calibration, later bottom vision) expects the image, after the camera's
 `transform`, to show machine +X to the right and +Y up, as seen from above through the nozzle. Up-looking cameras
-usually see a mirror image: "Measure mm/px" reports `mirrored in Y` (or X), and then `transform.flip_y: true` (or
-`flip_x`) puts it right. Both bottom cameras on the bench needed `flip_y`.
+usually see a mirror image: "Measure mm/px" reports `mirrored in Y` (machine +Y moves the picture down), and then
+`transform.flip_x: true` (flip about the X axis, top-bottom, as OpenPnP) puts it right; `mirrored in X` needs
+`flip_y: true` (left-right). It also reports `rotated r°` (counter-clockwise): subtract r from `transform.rotate`.
+Both bottom cameras on the bench were mirrored in Y. Until 2026-11-25 TinkerPnP's `flip_x`/`flip_y` meant the opposite
+(left-right / top-bottom) and `rotate` was clockwise in 90° steps: swap `flip_x` and `flip_y` and negate `rotate` in
+older configurations.
+
+## Advanced calibration (lens distortion, tilt)
+
+As OpenPnP's Advanced Camera Calibration. On the camera's **Advanced calibration** tab, **Calibrate** moves the
+empty nozzle to the camera's location, then walks its tip along `calibration.radial_lines` (32) lines from the centre
+out to `fill` (90 %) of the view, at the location's Z and `secondary_z_offset` (2 mm) above. A camera model is fitted
+to where the tip shows up (OpenCV's camera calibration with the machine positions as the reference): lens distortion
+(k1, k2; tangential with `tangential: true`), the camera's tilt, rotation and mirror image, its distance, and where its
+optical axis really is. It is saved in the state store (`camera_calibration/<id>`). **Use it** sets
+`calibration.enabled: true` and `units_per_pixel` from the model; after Apply every frame is corrected into a straight
+top view centred on the camera's location, +X right, +Y up, so mm/px is right across the whole image, not only in the
+middle. While it is on, `transform.rotate` / `flip_*` don't apply (the model has the orientation); `crop` still does.
+
+Needs the camera's location (with the focus Z) and a rough `units_per_pixel` (Measure). The bore must show as a dark
+hole in the bright tip. Down-looking cameras (with a calibration fiducial, as OpenPnP) are not done yet. Changing the
+model or switching it on resets the nozzle tip calibrations (they were measured through the old view).
 
 ## When the device is open
 
@@ -166,6 +191,7 @@ commas: `?overlay=crosshair,scale`.
 
 ## Not yet
 
-Lens calibration (undistort), automatic `units_per_pixel` measurement, camera calibration helpers (phase 2) and
-vision (phase 6). Other sources (Raspberry Pi camera through libcamera, network streams) can be added as camera
+Against OpenPnP (see `openpnp-differences.md`): advanced calibration of down-looking cameras, units per pixel per Z
+(3D) used by vision, measuring down cameras, light actuators, settle methods other than a fixed time, scale/deinterlace/white balance transforms.
+Other sources (Raspberry Pi camera through libcamera, network streams) can be added as camera
 types; OpenCV already opens most network streams, so a `url` camera type would be small.
