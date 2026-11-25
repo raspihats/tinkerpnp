@@ -394,3 +394,23 @@ def test_unsafe_z_roaming_resets_virtual_z(m):
     m.planner.user_action(n1, jogging=True)
     assert pos(m, "z") == 37
 
+
+def test_jog_with_tip_runout_does_not_drift(m):
+    """With a tip calibration, the location is the tip's: jogging up and down returns to the start, and a move puts
+    the tip (reported location) exactly at the target. Before, every jog moved by the step minus the runout."""
+    run(m, m.enable)
+    n1 = nozzle(m, "N1")
+    m.state_store.state_set(f"tip_calibration/{n1.settings.tip}",
+                            {"runout": 0.031, "phase": -92.4, "enabled": True})
+    run(m, m.planner.move_to, n1, {"x": 100, "y": 100, "rotation": 0})
+    start = m.planner.location(n1)
+    assert (start["x"], start["y"]) == (pytest.approx(100), pytest.approx(100))
+    y_axis0 = pos(m, "y")
+    assert y_axis0 == pytest.approx(100 + 0.031)          # the axis is off by the runout, the tip is on target
+    for _ in range(5):
+        run(m, m.planner.jog, n1, {"y": 0.1})
+        run(m, m.planner.jog, n1, {"y": -0.1})
+    end = m.planner.location(n1)
+    assert end["y"] == pytest.approx(start["y"]) and end["x"] == pytest.approx(start["x"])
+    run(m, m.planner.jog, n1, {"y": 0.1})
+    assert pos(m, "y") == pytest.approx(y_axis0 + 0.1)

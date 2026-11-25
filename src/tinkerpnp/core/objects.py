@@ -339,8 +339,19 @@ class Nozzle(HeadMountable):
                             part_height=None, vacuum=s.vacuum,
                             vacuum_value=None, in_safe_zone=self.in_safe_zone())
 
-    def compute_location(self) -> dict:
+    def axis_location(self) -> dict:
+        """Where the nozzle's rotation axis is (no tip runout)."""
         return self.head_location(self.z.position, self.rotation.position)
+
+    def compute_location(self) -> dict:
+        """Where the tip is: the axis plus the calibrated runout at the current rotation (as OpenPnP reports a
+        compensated nozzle). Moves put the tip at the target, so a jog from here moves the tip by exactly the step;
+        starting from the axis instead made every jog move by the step minus the runout (drift on the bench)."""
+        loc = self.axis_location()
+        dx, dy = self.runout_offset(self.rotation.position)
+        loc["x"] += dx
+        loc["y"] += dy
+        return loc
 
     def runout(self) -> dict | None:
         """The loaded tip's calibration (nozzle tip runout), if any: {runout, phase, ...}."""

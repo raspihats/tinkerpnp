@@ -164,7 +164,7 @@ class SimulatedCamera(CameraBase):
         for nozzle in self.machine.of_kind("nozzle"):
             if not isinstance(nozzle, Nozzle):
                 continue
-            loc = dict(nozzle.compute_location())
+            loc = dict(nozzle.axis_location())          # the physical tip: axis + the simulated runout
             run = self.settings.sim_runout.get(nozzle.id)
             if run:                                      # the tip turns around an axis it isn't on
                 a = math.radians((loc.get("rotation") or 0) + run.get("phase", 0))
