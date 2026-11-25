@@ -173,7 +173,7 @@
 		<Card.Root><Card.Content class="text-sm text-muted-foreground">This machine has no G-code driver.</Card.Content></Card.Root>
 	{:else}
 		<Card.Root class="min-h-0 flex-1 gap-0 py-0 {compact ? 'rounded-none bg-transparent ring-0' : ''}">
-			<Card.Header class="flex flex-wrap items-center gap-2 border-b py-2.5 {compact ? 'px-3' : ''}">
+			<Card.Header class="flex flex-wrap items-center gap-2 border-b py-2.5 [.border-b]:pb-2.5 {compact ? 'px-3' : ''}">
 				<SquareTerminal class="size-4 text-muted-foreground" />
 				{#if drivers.length > 1}
 					<ToggleGroup.Root type="single" variant="outline" size="sm" bind:value={driver as string}>
@@ -186,7 +186,7 @@
 					<Badge variant={driverStatus.connected ? 'ok' : 'outline'}>{driverStatus.connected ? 'connected' : 'not connected'}</Badge>
 					{#if driverStatus.firmware && !compact}<span class="num hidden text-xs text-muted-foreground md:inline">{driverStatus.firmware}</span>{/if}
 				{/if}
-				<Card.Action class="flex items-center gap-3">
+				<Card.Action class="flex items-center gap-3 self-center">
 					<div class="flex items-center gap-2">
 						<Switch id="status" checked={!hideStatus} onCheckedChange={(v) => (hideStatus = !v)} />
 						<Label for="status" class="text-xs font-normal text-muted-foreground">Status reports</Label>

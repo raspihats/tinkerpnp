@@ -28,7 +28,8 @@
 </script>
 
 <Card.Root class="gap-0 py-0 transition-opacity {dash.dragging === id ? 'opacity-40' : ''}" data-panel={id}>
-	<Card.Header class="flex h-11 items-center gap-2 px-3 {collapsed ? '' : 'border-b'}">
+	<!-- py-0 / [.border-b]:pb-0: the card header pads its bottom when it has a border, which pushed the content up -->
+	<Card.Header class="flex h-11 items-center gap-2 px-3 py-0 [.border-b]:pb-0 {collapsed ? '' : 'border-b'}">
 		<span
 			role="button"
 			tabindex="-1"
@@ -47,7 +48,7 @@
 		</span>
 		<Icon class="size-4 text-muted-foreground" />
 		<Card.Title class="text-sm">{title}</Card.Title>
-		<Card.Action class="flex items-center gap-1">
+		<Card.Action class="flex items-center gap-1 self-center">
 			{#if actions && !collapsed}{@render actions()}{/if}
 			<Button variant="ghost" size="icon-sm" onclick={() => dash.toggle(id)} title={collapsed ? 'Expand' : 'Collapse'}>
 				<ChevronDown class="transition-transform {collapsed ? '-rotate-90' : ''}" />

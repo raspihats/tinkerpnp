@@ -10,6 +10,7 @@
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Separator } from '#lib/components/ui/separator/index.js';
 	import * as Popover from '#lib/components/ui/popover/index.js';
+	import * as Tooltip from '#lib/components/ui/tooltip/index.js';
 	import { Toaster } from '#lib/components/ui/sonner/index.js';
 	import { ModeWatcher, mode, toggleMode } from 'mode-watcher';
 	import {
@@ -30,7 +31,9 @@
 		Bell,
 		CircleCheck,
 		Info,
-		CircleX
+		CircleX,
+		PanelLeftClose,
+		PanelLeftOpen
 	} from '@lucide/svelte';
 
 	let { children }: LayoutProps = $props();
@@ -64,11 +67,33 @@
 		tinker.act('machine.stop', { reason: 'stop button (TinkerUI)' });
 	}
 
-	// Esc stops the machine from any page
+	// sidebar: full or icons only (Ctrl+B or the button in the top bar); remembered per browser
+	const NAV_KEY = 'tinkerpnp.nav.collapsed';
+	let navCollapsed = $state(false);
+	onMount(() => {
+		try {
+			navCollapsed = localStorage.getItem(NAV_KEY) === '1';
+		} catch {
+			/* no storage */
+		}
+	});
+	function toggleNav() {
+		navCollapsed = !navCollapsed;
+		try {
+			localStorage.setItem(NAV_KEY, navCollapsed ? '1' : '0');
+		} catch {
+			/* not remembered */
+		}
+	}
+
+	// Esc stops the machine from any page; Ctrl+B folds the sidebar
 	function onKey(e: KeyboardEvent) {
 		if (e.key === 'Escape' && enabled) {
 			e.preventDefault();
 			stop();
+		} else if (e.key.toLowerCase() === 'b' && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
+			e.preventDefault();
+			toggleNav();
 		}
 	}
 </script>
@@ -83,13 +108,19 @@
 </svelte:head>
 
 <div class="flex min-h-screen bg-background text-foreground">
-	<!-- sidebar (md and up) -->
-	<aside class="sticky top-0 hidden h-screen w-56 shrink-0 flex-col border-r bg-sidebar text-sidebar-foreground md:flex">
-		<a href="/" class="flex items-center gap-2.5 px-4 pt-4 pb-3">
-			<span class="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+	<!-- sidebar (md and up): full width or icons only. The icons keep their place (centred in the 3.5rem rail) while
+	     the width animates, and the labels fade out. -->
+	<Tooltip.Provider delayDuration={200}>
+	<aside
+		class="sticky top-0 hidden h-screen shrink-0 flex-col overflow-hidden border-r bg-sidebar text-sidebar-foreground transition-[width] duration-200 ease-out md:flex {navCollapsed
+			? 'w-14'
+			: 'w-56'}"
+	>
+		<a href="/" class="flex items-center gap-2.5 px-3 pt-4 pb-3" title={navCollapsed ? 'TinkerPnP' : undefined}>
+			<span class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
 				<Crosshair class="size-4.5" strokeWidth={2.5} />
 			</span>
-			<span class="leading-tight">
+			<span class="leading-tight whitespace-nowrap transition-opacity duration-150 {navCollapsed ? 'opacity-0' : 'opacity-100'}">
 				<span class="block text-sm font-semibold tracking-tight text-foreground">TinkerPnP</span>
 				<span class="block max-w-36 truncate text-[11px] text-muted-foreground">{tinker.info?.machine_name ?? 'pick and place'}</span>
 			</span>
@@ -98,44 +129,67 @@
 		<nav class="flex flex-1 flex-col gap-0.5 p-2">
 			{#each nav as item (item.href)}
 				{@const active = page.url.pathname === item.href}
-				<a
-					href={item.href}
-					aria-current={active ? 'page' : undefined}
-					class="flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm transition-colors {active
-						? 'bg-sidebar-accent font-medium text-sidebar-accent-foreground'
-						: 'hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground'}"
-				>
-					<item.icon class="size-4 {active ? 'text-primary' : ''}" />
-					{item.label}
-				</a>
+				<Tooltip.Root disabled={!navCollapsed}>
+					<Tooltip.Trigger>
+						{#snippet child({ props })}
+							<a
+								{...props}
+								href={item.href}
+								aria-current={active ? 'page' : undefined}
+								aria-label={navCollapsed ? item.label : undefined}
+								class="flex h-9 items-center gap-2.5 rounded-md px-3 text-sm whitespace-nowrap transition-colors {active
+									? 'bg-sidebar-accent font-medium text-sidebar-accent-foreground'
+									: 'hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground'}"
+							>
+								<item.icon class="size-4 shrink-0 {active ? 'text-primary' : ''}" />
+								<span class="transition-opacity duration-150 {navCollapsed ? 'opacity-0' : 'opacity-100'}">{item.label}</span>
+							</a>
+						{/snippet}
+					</Tooltip.Trigger>
+					<Tooltip.Content side="right" sideOffset={8}>{item.label}</Tooltip.Content>
+				</Tooltip.Root>
 			{/each}
 		</nav>
 		<Separator />
 		<div class="flex flex-col gap-2 p-3 text-xs">
-			<div class="flex items-center gap-2">
+			<div class="flex items-center gap-2 {navCollapsed ? 'flex-col' : ''}">
 				<span
-					class="size-2 rounded-full {tinker.connection === 'connected'
+					title={navCollapsed ? (tinker.connection === 'connected' ? `server ${tinker.info?.hostname ?? ''}` : tinker.connection) : undefined}
+					class="size-2 shrink-0 rounded-full {tinker.connection === 'connected'
 						? 'bg-ok'
 						: tinker.connection === 'connecting'
 							? 'animate-pulse bg-warn'
 							: 'bg-alarm'}"
 				></span>
-				<span class="text-muted-foreground">
-					{tinker.connection === 'connected' ? `server ${tinker.info?.hostname ?? ''}` : tinker.connection}
-				</span>
-				<Button variant="ghost" size="icon-sm" class="ml-auto" onclick={toggleTheme} title={dark ? 'Light theme' : 'Dark theme'}>
+				{#if !navCollapsed}
+					<span class="truncate whitespace-nowrap text-muted-foreground">
+						{tinker.connection === 'connected' ? `server ${tinker.info?.hostname ?? ''}` : tinker.connection}
+					</span>
+				{/if}
+				<Button variant="ghost" size="icon-sm" class={navCollapsed ? '' : 'ml-auto'} onclick={toggleTheme} title={dark ? 'Light theme' : 'Dark theme'}>
 					{#if dark}<Sun />{:else}<Moon />{/if}
 				</Button>
 			</div>
-			{#if tinker.info}
-				<span class="text-[11px] text-muted-foreground/70">TinkerPnP {tinker.info.version} · API {tinker.info.api_version}</span>
+			{#if tinker.info && !navCollapsed}
+				<span class="text-[11px] whitespace-nowrap text-muted-foreground/70">TinkerPnP {tinker.info.version} · API {tinker.info.api_version}</span>
 			{/if}
 		</div>
 	</aside>
+	</Tooltip.Provider>
 
 	<div class="flex min-w-0 flex-1 flex-col">
 		<!-- top bar -->
 		<header class="sticky top-0 z-20 flex h-14 items-center gap-3 border-b bg-background/85 px-4 backdrop-blur">
+			<Button
+				variant="ghost"
+				size="icon-sm"
+				class="-ml-1 hidden text-muted-foreground md:inline-flex"
+				onclick={toggleNav}
+				title={navCollapsed ? 'Show the menu (Ctrl+B)' : 'Icons only (Ctrl+B)'}
+				aria-label={navCollapsed ? 'Show the menu' : 'Collapse the menu to icons'}
+			>
+				{#if navCollapsed}<PanelLeftOpen />{:else}<PanelLeftClose />{/if}
+			</Button>
 			<nav class="flex gap-0.5 md:hidden">
 				{#each nav as item (item.href)}
 					<Button href={item.href} variant={page.url.pathname === item.href ? 'secondary' : 'ghost'} size="icon-sm" title={item.label}>
