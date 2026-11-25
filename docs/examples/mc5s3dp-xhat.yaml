@@ -173,8 +173,8 @@ actuators:
     type: gcode
     driver: grbl
     value: boolean
-    on: "M3 S1000"                   # spindle on, 100 % PWM -> vacuum pump
-    off: "M5"
+    on: "M64 P2"                     # aux output 2 on (PC9 / OD2 / X4) -> vacuum pump
+    off: "M65 P2"
     on_enable: off
     on_disable: off
   valve1:
