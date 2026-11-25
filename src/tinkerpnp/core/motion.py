@@ -11,6 +11,7 @@ Order of a move with X/Y travel and `safe_z: auto`:
 """
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 from .errors import MachineError
@@ -208,9 +209,12 @@ class Motion:
         self.m.motion.update(last_move={"object": obj.name, "requested": requested, "location": self.location(obj)})
         return self.location(obj)
 
-    def jog(self, obj: Any, delta: dict, speed: float = 1.0, safe_z: str | None = None) -> dict:
+    def jog(self, obj: Any, delta: dict, speed: float = 1.0, safe_z: str | None = None,
+            min_step: bool = False) -> dict:
         """Move relative to the current location. safe_z: auto (lift before X/Y travel), none (stay at this Z, e.g.
-        to centre a nozzle over a camera), or None = machine.jog.safe_z from the configuration."""
+        to centre a nozzle over a camera), or None = machine.jog.safe_z from the configuration.
+        A non-zero step smaller than the axis `resolution` fails with `below_resolution` (data: coord, delta,
+        min_step); with min_step=True such a step is made one resolution step instead."""
         if not isinstance(delta, dict) or not delta:
             raise MachineError("invalid_params", "delta must be an object with x, y, z and/or rotation")
         current = self.location(obj)
@@ -221,9 +225,42 @@ class Motion:
             if not isinstance(d, (int, float)) or isinstance(d, bool):
                 raise MachineError("invalid_params", f"{coord} must be a number")
             location[coord] = current[coord] + d
+        for coord, d in delta.items():
+            small = self._below_resolution(obj, coord, float(d))
+            if small is None:
+                continue
+            axis, step = small
+            if not min_step:
+                raise MachineError("below_resolution",
+                                   f"{coord} step {abs(d):g} is smaller than the minimum step of axis/{axis.id} "
+                                   f"({step:.4g})", coord=coord, delta=d, min_step=round(step, 6), axis=axis.id)
+            location[coord] = current[coord] + math.copysign(step, d)
         if safe_z is None:
             safe_z = "auto" if self.m.config.machine.jog.safe_z == "always" else "none"
         return self.move_to(obj, location, speed, safe_z)
+
+    def _below_resolution(self, obj: Any, coord: str, d: float) -> tuple[ControllerAxis, float] | None:
+        """(raw axis, minimum step in the coordinate's units) when 0 < |d| < one step of that axis, else None."""
+        if d == 0:
+            return None
+        axis = self.axes_of(obj).get(coord)
+        if axis is None:
+            return None
+        base, v0 = raw(axis, 0.0)
+        _, v1 = raw(axis, 1.0)
+        if not isinstance(base, ControllerAxis):
+            return None
+        scale = abs(v1 - v0)                      # raw units per coordinate unit (mapped axes)
+        if scale == 0:
+            return None
+        res = base.settings.resolution
+        if res:
+            step = res / scale
+            return (base, step) if abs(d) < step - 1e-9 else None
+        # no resolution configured: a move within the tolerance is never sent, so don't drop it silently either;
+        # offer twice the tolerance, which is always sent
+        tol = base.tolerance / scale
+        return (base, 2 * tol) if abs(d) <= tol + 1e-12 else None
 
     def move_to_safe_z(self, head: Any) -> None:
         lift = self.safe_z_targets(head)

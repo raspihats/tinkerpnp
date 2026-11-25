@@ -184,14 +184,22 @@ class TinkerClient {
 		else if (level === 'ok') toast.success(text, { description });
 	}
 
-	/** Call a method for a user action: failures go to the message log (and a toast) instead of exceptions. Returns null on failure. */
-	async act<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs = 120000): Promise<T | null> {
+	/** Call a method for a user action: failures go to the message log (and a toast) instead of exceptions. Returns null on failure.
+	 * `handle` may take an RpcError itself (return true) instead of the default message. */
+	async act<T = unknown>(
+		method: string,
+		params: Record<string, unknown> = {},
+		timeoutMs = 120000,
+		handle?: (e: RpcError) => boolean
+	): Promise<T | null> {
 		this.busy[method] = (this.busy[method] ?? 0) + 1;
 		try {
 			const r = await this.call<T>(method, params, timeoutMs);
 			return r;
 		} catch (e) {
-			if (e instanceof RpcError) this.notify('error', e.message, e.data?.name);
+			if (e instanceof RpcError) {
+				if (!handle?.(e)) this.notify('error', e.message, e.data?.name);
+			}
 			else this.notify('error', `${method}: ${e}`);
 			return null;
 		} finally {

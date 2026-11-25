@@ -112,6 +112,7 @@ to switch on; `message` is human-readable and may change.
 | -32018 | `vision_failed` | 422 | Vision didn't find the target (`data.result` with diagnostics) |
 | -32019 | `feeder_error` | 409 | Feeder couldn't feed (`data.feeder`) |
 | -32020 | `unauthorized` | 401 | Missing/invalid credentials |
+| -32021 | `below_resolution` | 422 | Jog step smaller than one step of the axis (`data.coord`, `data.delta`, `data.min_step`, `data.axis`) |
 | -32030 | `restart_required` | 409 | Change accepted but needs reconnect/restart to apply (informational on `config.update`) |
 | -32099 | `internal_error` | 500 | Bug; `data.trace_id` points into the server log |
 
@@ -162,7 +163,7 @@ rate-limited per connection (default 10 per second, `rate` param on subscribe), 
 | `machine` | `state` (`disconnected`, `connecting`, `alarm`, `idle`, `busy`, `paused`, `error`, `disabled`), `enabled`, `homed`, `alarm` (text or null), `message`, `selected_tool` (object name the UI jogs) |
 | `motion` | `moving`, `last_move` (target, duration), `safe_z` (bool: all nozzles in safe zone), `queue_length` |
 | `driver/<id>` | `type`, `connected`, `firmware` (detected name/version), `port`, `last_error` |
-| `axis/<id>` | `type`, `kind` (`linear`, `rotation`), `position`, `homed`, `soft_limits`, `safe_zone`, `driver`, `letter` |
+| `axis/<id>` | `type`, `kind` (`linear`, `rotation`), `position`, `homed`, `soft_limits`, `safe_zone`, `driver`, `letter`, `resolution` |
 | `head/<id>` | `location` (head reference point), `nozzles`, `cameras`, `actuators`, `pump` |
 | `nozzle/<id>` | `location`, `tip` (nozzle tip id), `part` (part id held, or null), `vacuum` (actuator name), `vacuum_value` (if sensed), `in_safe_zone` |
 | `nozzle_tip/<id>` | `loaded_on` (nozzle id or null), `calibrated` |
@@ -194,7 +195,7 @@ of the design). Methods return when the motion has **finished** (`wait: false` r
 | Method | Params | Result |
 |---|---|---|
 | `motion.move_to` | `object` (head-mountable or `axis/<id>`), `location` (or `position` for axes), `speed` (fraction 0–1 of max, default 1), `safe_z` (`auto` default, `none` to move directly), `wait` | `{"location": {...}}` final location |
-| `motion.jog` | `object`, `delta` (`{x,y,z,rotation}`), `speed`, `safe_z` (`auto`: raise all nozzles before X/Y travel, `none`: stay at this Z, e.g. to centre a nozzle over a camera; default from `machine.jog.safe_z`) | final location |
+| `motion.jog` | `object`, `delta` (`{x,y,z,rotation}`), `speed`, `safe_z` (`auto`: raise all nozzles before X/Y travel, `none`: stay at this Z, e.g. to centre a nozzle over a camera; default from `machine.jog.safe_z`), `min_step` (default false) | final location. A non-zero step smaller than the axis `resolution` fails with `below_resolution` (data: `coord`, `delta`, `min_step`, `axis`); with `min_step: true` it moves one resolution step instead. The web UI asks with a pop-up |
 | `motion.jog_cancel` | – | `{}`. **Immediate** |
 | `motion.park` | `head` (default: the only head), `axes` (`xy`, `z`, `all`) | final location |
 | `motion.move_to_safe_z` | `head` | `{}` |

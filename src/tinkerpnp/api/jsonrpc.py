@@ -31,6 +31,7 @@ ERRORS = {
     "vision_failed": (-32018, 422),
     "feeder_error": (-32019, 409),
     "unauthorized": (-32020, 401),
+    "below_resolution": (-32021, 422),
     "restart_required": (-32030, 409),
     "internal_error": (-32099, 500),
 }

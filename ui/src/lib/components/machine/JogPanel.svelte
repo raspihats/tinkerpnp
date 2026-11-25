@@ -1,7 +1,8 @@
 <script lang="ts">
 	// Jogging and absolute moves for the selected tool (machine.selected_tool, shared by all clients).
 	// Keys (when no input has focus): arrows = X/Y, Page Up/Down = Z, comma/period = rotation, Shift = 10x step.
-	import { tinker, idOf } from '#lib/api/client.svelte.js';
+	import { tinker, idOf, RpcError } from '#lib/api/client.svelte.js';
+	import { toast } from 'svelte-sonner';
 	import { segmentItem } from '#lib/styles.js';
 	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
@@ -55,9 +56,22 @@
 	const requested = $derived(lastMove?.object === tool ? (lastMove?.requested ?? null) : null);
 	const enabled = $derived(machine.enabled === true);
 
-	function jog(delta: Record<string, number>) {
+	function jog(delta: Record<string, number>, minStep = false) {
 		if (!tool || !ready || moving) return; // one jog at a time: holding a key doesn't queue up moves
-		tinker.act('motion.jog', { object: tool, delta, speed: Number(speed), safe_z: lift ? 'auto' : 'none' });
+		const params = { object: tool, delta, speed: Number(speed), safe_z: lift ? 'auto' : 'none', min_step: minStep };
+		tinker.act('motion.jog', params, 120000, (e: RpcError) => {
+			if (e.data?.name !== 'below_resolution') return false;
+			// the axis can't move that little (e.g. Z in 0.225 mm motor steps): offer the minimum step instead
+			const min = Number(e.data.min_step);
+			const coord = String(e.data.coord ?? '');
+			const unit = coord === 'rotation' ? '°' : ' mm';
+			toast.warning(`${coord.toUpperCase()} can't move ${Math.abs(Number(e.data.delta))}${unit}`, {
+				description: `The minimum step of ${coord.toUpperCase()} is ${min.toFixed(3)}${unit}. Move by the minimum step instead?`,
+				duration: 10000,
+				action: { label: `Move ${min.toFixed(3)}${unit}`, onClick: () => jog(delta, true) }
+			});
+			return true;
+		});
 	}
 	const s = () => Number(step);
 	const r = () => Number(rotStep);

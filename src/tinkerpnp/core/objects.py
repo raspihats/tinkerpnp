@@ -6,9 +6,9 @@ cameras.py.
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Callable, Literal, TYPE_CHECKING
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .errors import MachineError, Stopped
 from .registry import registry
@@ -163,7 +163,18 @@ class ControllerAxisSettings(Settings):
     feed: Speed | None = None
     acceleration: Acceleration | None = None
     acceleration_applies_in: Literal["firmware", "driver"] = "firmware"
-    tolerance: float = 0.025
+    tolerance: float = Field(0.025, description="Positions closer than this count as reached (no move is sent). "
+                                                "Keep it below `resolution`")
+    resolution: float | None = Field(None, gt=0, description="Smallest move the axis can make (one motor step, "
+                                                             "e.g. 1/4.444 mm), in mm or degrees. Jogs smaller than "
+                                                             "this are refused, offering the minimum step")
+
+    @model_validator(mode="after")
+    def _tolerance_below_resolution(self):
+        if self.resolution is not None and self.tolerance >= self.resolution:
+            raise ValueError(f"tolerance {self.tolerance} must be smaller than resolution {self.resolution}, "
+                             "or moves of one step are never sent (half the resolution is enough)")
+        return self
 
 
 class VirtualAxisSettings(Settings):
@@ -204,7 +215,7 @@ class ControllerAxis(AxisBase):
         self._status.update(kind=s.kind, position=s.home, homed=False, driver=s.driver, letter=s.letter,
                             homing=self.homeable,
                             soft_limits=list(s.soft_limits) if s.soft_limits else None,
-                            safe_zone=list(s.safe_zone) if s.safe_zone else None)
+                            safe_zone=list(s.safe_zone) if s.safe_zone else None, resolution=s.resolution)
 
     def limits(self) -> tuple[float, float] | None:
         s = self.settings

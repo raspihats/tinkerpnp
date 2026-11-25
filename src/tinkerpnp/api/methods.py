@@ -192,13 +192,14 @@ async def motion_move_to(ctx: "Connection", object: str, location: dict | None =
 
 @rpc.method("motion.jog")
 async def motion_jog(ctx: "Connection", object: str, delta: dict, speed: float = 1.0,
-                     safe_z: str | None = None) -> dict:
-    """Move relative to the current location. safe_z: auto / none; default machine.jog.safe_z."""
+                     safe_z: str | None = None, min_step: bool = False) -> dict:
+    """Move relative to the current location. safe_z: auto / none; default machine.jog.safe_z. A step below the
+    axis resolution fails with below_resolution; min_step=true makes it one resolution step instead."""
     if safe_z not in (None, "auto", "none"):
         raise RpcError("invalid_params", "safe_z must be auto or none")
     planner = ctx.app_state.machine.planner
     obj = planner.resolve(object)
-    return {"location": await _run(ctx, planner.jog, obj, delta, speed, safe_z)}
+    return {"location": await _run(ctx, planner.jog, obj, delta, speed, safe_z, bool(min_step))}
 
 
 @rpc.method("motion.jog_cancel", immediate=True)

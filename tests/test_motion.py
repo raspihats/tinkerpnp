@@ -240,3 +240,67 @@ def test_websocket_stop_overtakes_a_running_move():
         assert response(3)["error"]["data"]["name"] == "stopped"
         assert "idle" in states and "homing" in states
     machine.close()
+
+
+def test_jog_below_resolution():
+    """Z moves in 0.225 mm steps: a 0.1 mm jog is refused with the minimum step, min_step=True makes one step."""
+    import tempfile
+    with open(SIMULATED) as fh:
+        data = _plain(YAML(typ="rt").load(fh))
+    data["drivers"]["sim"]["time_scale"] = 0.0
+    data["axes"]["z"].update(resolution=0.225, tolerance=0.12)
+    path = os.path.join(tempfile.mkdtemp(prefix="tinkerpnp-test-"), "machine.yaml")
+    with open(path, "w") as fh:
+        YAML().dump(data, fh)
+    m = Machine(build_config(data, path))
+    try:
+        run(m, m.enable)
+        z0 = pos(m, "z")
+        with pytest.raises(MachineError) as e:
+            run(m, m.planner.jog, nozzle(m, "N1"), {"z": -0.1})
+        assert e.value.name == "below_resolution"
+        assert e.value.data["min_step"] == pytest.approx(0.225) and e.value.data["coord"] == "z"
+        assert pos(m, "z") == z0
+        m.submit(m.planner.jog, nozzle(m, "N1"), {"z": -0.1}, 1.0, None, True).result(timeout=10)
+        assert pos(m, "z") == pytest.approx(z0 - 0.225)
+        # N2 sits on the mapped axis z_n2 = 114 - z: same step size, opposite direction
+        m.submit(m.planner.jog, nozzle(m, "N2"), {"z": -0.05}, 1.0, None, True).result(timeout=10)
+        assert pos(m, "z") == pytest.approx(z0)
+        run(m, m.planner.jog, nozzle(m, "N1"), {"z": -1})                # larger steps are unaffected
+        assert pos(m, "z") == pytest.approx(z0 - 1)
+        run(m, m.planner.jog, nozzle(m, "N1"), {"x": 0.1})               # X has no resolution set
+    finally:
+        m.close()
+
+
+def test_tolerance_must_be_below_resolution():
+    with open(SIMULATED) as fh:
+        data = _plain(YAML(typ="rt").load(fh))
+    data["axes"]["z"].update(resolution=0.225, tolerance=0.25)
+    with pytest.raises(Exception, match="tolerance"):
+        build_config(data, "/nonexistent/machine.yaml")
+
+
+def test_every_error_name_has_a_code():
+    """Each MachineError/RpcError name raised in the code must be in jsonrpc.ERRORS (else HTTP answers 500)."""
+    import re
+    from tinkerpnp.api.jsonrpc import ERRORS
+    src = os.path.join(ROOT, "src", "tinkerpnp")
+    names = set()
+    for d, _, files in os.walk(src):
+        for f in files:
+            if f.endswith(".py"):
+                names |= set(re.findall(r'(?:MachineError|RpcError)\(\s*"([a-z_]+)"', open(os.path.join(d, f)).read()))
+    assert names and not names - set(ERRORS), sorted(names - set(ERRORS))
+
+
+def test_jog_within_tolerance_is_never_silent(m):
+    """Without a resolution, a jog inside the axis tolerance (it would not be sent) fails with below_resolution."""
+    run(m, m.enable)
+    tol = m.get("axis", "x").tolerance
+    with pytest.raises(MachineError) as e:
+        run(m, m.planner.jog, nozzle(m, "N1"), {"x": tol / 2})
+    assert e.value.name == "below_resolution" and e.value.data["min_step"] == pytest.approx(2 * tol)
+    x0 = pos(m, "x")
+    m.submit(m.planner.jog, nozzle(m, "N1"), {"x": tol / 2}, 1.0, None, True).result(timeout=10)
+    assert pos(m, "x") == pytest.approx(x0 + 2 * tol)

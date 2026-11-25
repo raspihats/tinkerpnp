@@ -63,7 +63,8 @@ axes:
     feed: 8000 mm/min                # = grblHAL $110
     acceleration: 200                # informational: set in firmware ($120), the driver doesn't send it
     acceleration_applies_in: firmware
-    tolerance: 0.025
+    resolution: 0.0125           # one motor step: 1 / 80 steps/mm ($100); smaller jogs offer this instead
+    tolerance: 0.007             # just over half a step: positions this close count as reached
   y:
     type: controller
     driver: grbl
@@ -74,7 +75,8 @@ axes:
     feed: 6000 mm/min                # = $111
     acceleration: 100                # = $121
     acceleration_applies_in: firmware
-    tolerance: 0.025
+    resolution: 0.0125           # one motor step: 1 / 80 steps/mm ($101); smaller jogs offer this instead
+    tolerance: 0.007             # just over half a step: positions this close count as reached
   z:
     type: controller
     driver: grbl
@@ -86,7 +88,8 @@ axes:
     feed: 3000 mm/min                # kept slow: the motor loses steps against the spring when pushed
     acceleration: 20000              # = $122
     acceleration_applies_in: firmware
-    tolerance: 0.25                  # Z moves in 0.225 mm steps (4.444 steps/mm)
+    resolution: 0.225                # one motor step: 1 / 4.444 steps/mm ($102); smaller jogs offer this instead
+    tolerance: 0.12                  # positions within half a step count as reached
   a:
     type: controller
     driver: grbl
@@ -97,6 +100,8 @@ axes:
     feed: 3000 deg/min
     acceleration: 100                # = $123
     acceleration_applies_in: firmware
+    resolution: 0.1125           # one motor step: 1 / 8.889 steps/deg ($103); smaller jogs offer this instead
+    tolerance: 0.06              # just over half a step: positions this close count as reached
   b:
     type: controller
     driver: grbl
@@ -107,6 +112,8 @@ axes:
     feed: 3000 deg/min
     acceleration: 100                # = $124
     acceleration_applies_in: firmware
+    resolution: 0.1125           # one motor step: 1 / 8.889 steps/deg ($104); smaller jogs offer this instead
+    tolerance: 0.06              # just over half a step: positions this close count as reached
   z_n2:                              # nozzle 2's view of the shared Z: lower value = lower nozzle, as for N1
     type: mapped
     input: z
@@ -154,7 +161,7 @@ heads:
         offset: {x: 21.9, y: 20.0}   # TODO: from EvePnP, not measured
         units_per_pixel: {x: 0.04, y: 0.04}   # TODO
 
-    actuators: [pump, valve1, valve2]   # ids of actuators that belong to this head (defined below)
+    actuators: [pump, valve1, valve2, top_light]   # ids of actuators that belong to this head (defined below)
 
 # ── Nozzle tips ──────────────────────────────────────────────────────────────────────────────────────────────────
 nozzle_tips:
@@ -191,6 +198,24 @@ actuators:
     value: boolean
     on: "M64 P1"                     # aux output 1 on (PA8 / OD1 / X3 pin 10)
     off: "M65 P1"
+    on_enable: off
+    on_disable: off
+  bottom_light:
+    name: Bottom camera light
+    type: gcode
+    driver: grbl
+    value: boolean
+    on: "M64 P3"                     # aux output 3 on (PC8 / OD3 / J12 pin 1): bottom camera LEDs
+    off: "M65 P3"
+    on_enable: off
+    on_disable: off
+  top_light:
+    name: Top camera light
+    type: gcode
+    driver: grbl
+    value: boolean
+    on: "M64 P4"                     # aux output 4 on (PC7 / OD4 / J12 pin 3): top camera LEDs
+    off: "M65 P4"
     on_enable: off
     on_disable: off
 
