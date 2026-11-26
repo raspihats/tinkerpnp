@@ -6,7 +6,6 @@
 	import { segmentItem } from '#lib/styles.js';
 	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
-	import { Input } from '#lib/components/ui/input/index.js';
 	import { Label } from '#lib/components/ui/label/index.js';
 	import { Switch } from '#lib/components/ui/switch/index.js';
 	import Dro from './Dro.svelte';
@@ -27,7 +26,18 @@
 		ArrowUpToLine
 	} from '@lucide/svelte';
 
-	let { tools, distances }: { tools: string[]; distances: number[] } = $props();
+	let {
+		tools,
+		distances,
+		lift = { safe_z: 'never', lift_above: 5 }
+	}: { tools: string[]; distances: number[]; lift?: { safe_z: string; lift_above: number } } = $props();
+	const liftText = $derived(
+		lift.safe_z === 'always'
+			? 'X/Y jogs raise to safe Z first'
+			: lift.safe_z === 'long'
+				? `X/Y jogs over ${lift.lift_above} mm raise to safe Z first, shorter ones stay at the current Z`
+				: 'Jogs stay at the current Z (as OpenPnP)'
+	);
 
 	const ROTATIONS = [0.1, 1, 5, 15, 45, 90];
 
@@ -36,7 +46,6 @@
 	// As OpenPnP: jogs move straight there at the current Z (machine.jog.safe_z), and board protection refuses jogs
 	// that would bring a nozzle below safe Z over a board of the loaded job. On at every start, not remembered.
 	let boardProtection = $state(true);
-	let target = $state<{ x: string; y: string; z: string; rotation: string }>({ x: '', y: '', z: '', rotation: '' });
 
 	$effect(() => {
 		const d = distances.map(String);
@@ -84,17 +93,6 @@
 	};
 	const r = () => Number(rotStep);
 
-	function moveTo(e: SubmitEvent) {
-		e.preventDefault();
-		if (!tool) return;
-		const location: Record<string, number> = {};
-		for (const k of ['x', 'y', 'z', 'rotation'] as const) {
-			const v = target[k].trim();
-			if (v !== '') location[k] = Number(v);
-		}
-		if (Object.keys(location).length) tinker.act('motion.move_to', { object: tool, location });
-	}
-
 	function onKey(e: KeyboardEvent) {
 		const t = e.target as HTMLElement;
 		if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
@@ -137,7 +135,13 @@
 		</ToggleGroup.Root>
 	</div>
 
-	<Dro location={loc} {requested} />
+	<Dro
+		location={loc}
+		{requested}
+		onset={ready && tool
+			? (key, value) => tinker.act('motion.move_to', { object: tool, location: { [key]: value } })
+			: null}
+	/>
 
 	<div class="flex items-center justify-center gap-6">
 		<!-- X/Y pad -->
@@ -179,7 +183,7 @@
 	</div>
 
 	<div class="grid grid-cols-[4.5rem_1fr] items-center gap-x-3 gap-y-2">
-		<span class="eyebrow">Step</span>
+		<span class="eyebrow">Step <span class="normal-case">mm</span></span>
 		<ToggleGroup.Root type="single" variant="outline" size="sm" bind:value={step} class="w-full">
 			{#each distances as d (d)}
 				<ToggleGroup.Item value={String(d)} class="flex-1 font-mono {segmentItem}">{d}</ToggleGroup.Item>
@@ -222,16 +226,10 @@
 		{/if}
 	</div>
 
-	<form class="flex items-center gap-1.5" onsubmit={moveTo}>
-		{#each [['x', 'X'], ['y', 'Y'], ['z', 'Z'], ['rotation', 'R']] as const as [k, label] (k)}
-			<Input class="h-8 min-w-0 font-mono text-xs" placeholder={label} inputmode="decimal" aria-label="target {label}" bind:value={target[k]} />
-		{/each}
-		<Button type="submit" size="sm" class="h-8" disabled={!ready || moving}>Go</Button>
-	</form>
 
 	<p class="text-xs leading-relaxed text-muted-foreground">
 		<kbd class="kbd">←→↑↓</kbd> X/Y · <kbd class="kbd">PgUp</kbd><kbd class="kbd">PgDn</kbd> Z ·
-		<kbd class="kbd">,</kbd><kbd class="kbd">.</kbd> rotate · <kbd class="kbd">Shift</kbd> finer (two steps smaller). Jogs stay at the current Z (as OpenPnP); Go,
+		<kbd class="kbd">,</kbd><kbd class="kbd">.</kbd> rotate · <kbd class="kbd">Shift</kbd> finer (two steps smaller). {liftText}. Click a position above to type one (Enter moves); typed positions,
 		Park, Home and click-to-move raise to safe Z before X/Y travel.
 	</p>
 </div>

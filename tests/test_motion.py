@@ -725,3 +725,16 @@ def test_c_park_and_auto_tool_select(m):
     assert pos(m, "b") == pytest.approx(0)
     run(m, m.planner.user_action, n2, True)
     assert m.state.status()["selected_tool"] == "nozzle/N2"            # as OpenPnP's auto tool select
+
+
+def test_long_jogs_lift_first_short_ones_stay_at_depth(m):
+    """jog.safe_z long (a deliberate deviation from OpenPnP's never-lift jogs): fine jogs stay down for aligning, a
+    jog longer than lift_above goes to safe Z first instead of dragging the nozzle across the bed."""
+    run(m, m.enable)
+    m.config.machine.jog.safe_z = "long"
+    n1 = nozzle(m, "N1")
+    run(m, m.planner.move_to, n1, {"x": 100, "y": 100, "z": 20})
+    run(m, m.planner.jog, n1, {"y": 1})
+    assert pos(m, "z") == pytest.approx(20) and pos(m, "y") == pytest.approx(101)
+    run(m, m.planner.jog, n1, {"y": 10})
+    assert pos(m, "z") == pytest.approx(57) and pos(m, "y") == pytest.approx(111)

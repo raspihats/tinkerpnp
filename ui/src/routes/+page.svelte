@@ -63,6 +63,7 @@
 	let cameras = $state<CameraInfo[]>([]);
 	let viewCamera = $state<string>('');
 	let distances = $state<number[]>([0.01, 0.1, 1, 10, 100]);
+	let jogLift = $state<{ safe_z: string; lift_above: number }>({ safe_z: 'never', lift_above: 5 });
 	let macros = $state<string[]>([]);
 
 	// cameras, jog settings and macros come from the server; reload when the configuration changes
@@ -79,10 +80,11 @@
 			})
 			.catch(() => {});
 		tinker
-			.call<{ config: { jog?: { distances?: number[]; safe_z?: string }; macros?: Record<string, unknown> } }>('config.get', { path: 'machine' })
+			.call<{ config: { jog?: { distances?: number[]; safe_z?: string; lift_above?: number }; macros?: Record<string, unknown> } }>('config.get', { path: 'machine' })
 			.then((r) => {
 				const jog = r.config?.jog;
 				if (jog?.distances?.length) distances = jog.distances;
+				jogLift = { safe_z: jog?.safe_z ?? 'never', lift_above: jog?.lift_above ?? 5 };
 				macros = Object.keys(r.config?.macros ?? {});
 			})
 			.catch(() => {});
@@ -222,7 +224,7 @@
 		</DashPanel>
 	{:else if id === 'toolhead'}
 		<DashPanel {id} {dash} title="Toolhead" icon={icons.toolhead}>
-			<JogPanel {tools} {distances} />
+			<JogPanel {tools} {distances} lift={jogLift} />
 		</DashPanel>
 	{:else if id === 'actuators'}
 		<DashPanel {id} {dash} title="Actuators" icon={icons.actuators} bodyClass="flex flex-col divide-y">

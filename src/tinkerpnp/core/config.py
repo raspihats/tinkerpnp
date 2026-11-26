@@ -41,9 +41,12 @@ class Park(BaseModel):
 
 class Jog(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    safe_z: Literal["always", "never"] = Field(
+    safe_z: Literal["always", "never", "long"] = Field(
         "never", description="never (as OpenPnP): jogs move straight there, at the current Z. always: every X/Y jog "
-                             "first raises all nozzles on the head to safe Z")
+                             "first raises all nozzles on the head to safe Z. long: only X/Y jogs longer than "
+                             "lift_above do (fine jogs stay at depth for aligning; long ones don't drag a lowered "
+                             "nozzle across the bed)")
+    lift_above: float = Field(5.0, gt=0, description="safe_z long: X/Y jogs longer than this (mm) lift first")
     distances: list[float] = Field(default_factory=lambda: [0.01, 0.1, 1, 10, 100])
 
 

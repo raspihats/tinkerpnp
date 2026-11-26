@@ -333,7 +333,10 @@ class Motion:
                                    f"({step:.4g})", coord=coord, delta=d, min_step=round(step, 6), axis=axis.id)
             location[coord] = current[coord] + math.copysign(step, d)
         if safe_z is None:
-            safe_z = "auto" if self.m.config.machine.jog.safe_z == "always" else "none"
+            jog = self.m.config.machine.jog
+            travel = math.hypot(float(delta.get("x", 0.0) or 0.0), float(delta.get("y", 0.0) or 0.0))
+            lift = jog.safe_z == "always" or (jog.safe_z == "long" and travel > jog.lift_above)
+            safe_z = "auto" if lift else "none"
         if boards:
             self.check_board_protection(obj, self.targets(obj, location), boards)
         return self.move_to(obj, location, speed, safe_z)

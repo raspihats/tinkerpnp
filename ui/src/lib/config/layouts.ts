@@ -813,7 +813,8 @@ const machine: TabSpec[] = [
 				title: 'Jogging',
 				fields: [
 					{ path: 'jog.distances', label: 'Jog distances', widget: 'numbers', unit: 'mm' },
-					{ path: 'jog.safe_z', label: 'Before X/Y jogs', widget: 'select', options: [['never', 'Stay at the current Z (as OpenPnP)'], ['always', 'Raise the nozzles to safe Z']] },
+					{ path: 'jog.safe_z', label: 'Before X/Y jogs', widget: 'select', options: [['never', 'Stay at the current Z (as OpenPnP)'], ['long', 'Raise to safe Z for long jogs only'], ['always', 'Always raise the nozzles to safe Z']] },
+					{ path: 'jog.lift_above', label: 'Long jogs are over', widget: 'number', unit: 'mm', help: "With 'long jogs only': X/Y jogs longer than this go up to safe Z first" },
 					{ path: 'unsafe_z_roaming_distance', label: 'Unsafe Z roaming', widget: 'number', unit: 'mm', help: 'As OpenPnP: virtual-Z tools jogged farther than this below safe Z go back up' },
 					{ path: 'auto_tool_select', label: 'Auto tool select', widget: 'bool', help: 'The tool you move becomes the selected one (OpenPnP)' }
 				]
