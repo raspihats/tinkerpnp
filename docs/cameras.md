@@ -154,14 +154,18 @@ everywhere.
 
 ## Orientation of up-looking cameras
 
-Vision on up-looking cameras (tip calibration, later bottom vision) expects the image, after the camera's
-`transform`, to show machine +X to the right and +Y up, as seen from above through the nozzle. Up-looking cameras
-usually see a mirror image: "Measure mm/px" reports `mirrored in Y` (machine +Y moves the picture down), and then
-`transform.flip_x: true` (flip about the X axis, top-bottom, as OpenPnP) puts it right; `mirrored in X` needs
-`flip_y: true` (left-right). It also reports `rotated r°` (counter-clockwise): subtract r from `transform.rotate`.
-Both bottom cameras on the bench were mirrored in Y. Until 2026-11-25 TinkerPnP's `flip_x`/`flip_y` meant the opposite
-(left-right / top-bottom) and `rotate` was clockwise in 90° steps: swap `flip_x` and `flip_y` and negate `rotate` in
-older configurations.
+Vision expects the picture, after the camera's `transform`, to show machine +X to the right and +Y up (for an
+up-looking camera: as seen from above, through the nozzle). **Measure** works out how the picture is turned from the
+two measured moves: a turn (`rotation_deg`), and whether it is a real mirror image (`mirrored`: the mapping from the
+machine to the picture has a negative determinant). An upside-down picture is a 180° turn, not a mirror in X and in Y.
+`correction` is the whole transform that puts it right, taking the current one into account: a rotation, and a
+left-right flip only for a mirror image. **Save + fix orientation** (camera view) or **Apply orientation** (settings)
+sets it. Up-looking cameras usually see a mirror image, so they get a flip.
+
+Until 2026-11-25 TinkerPnP's `flip_x`/`flip_y` meant the opposite (left-right / top-bottom) and `rotate` was clockwise
+in 90° steps: swap `flip_x` and `flip_y` and negate `rotate` in older configurations. Until 2026-11-26 the orientation
+fix set a flip for each mirrored axis *and* the rotation, which cancelled out for an upside-down picture: measure
+again and use the fix.
 
 ## Advanced calibration (lens distortion, tilt)
 

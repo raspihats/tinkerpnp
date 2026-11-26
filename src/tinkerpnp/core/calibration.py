@@ -68,6 +68,47 @@ def _shift(reference: Any, moved: Any, template_size: float) -> tuple[float, flo
     return float(fx - x0), float(fy - y0), float(score)      # plain floats: numpy types don't go into JSON
 
 
+def orientation(shift_x: tuple[float, float], shift_y: tuple[float, float], transform: Any) -> dict:
+    """How the picture is turned, and the transform that makes it right, from how far it moved (pixels, rows down)
+    for +1 of machine X and of Y. In picture coordinates with y up, machine X shows as (xx, -xy) and Y as (yx, -yy):
+    a mapping M. Upside down is a rotation by 180 degrees, not two mirrors: the turn is M's angle, and it is a mirror
+    image only if M's determinant is negative (then one flip, left-right, is needed).
+
+    The pipeline is P = F . R (rotate, then flip: CameraBase.apply_transform), so what is shown is P . S for the
+    sensor's own S = P^-1 M. The new transform must give P' . S = scale . I, so P' = P . M^-1, orthogonalized and
+    split into a rotation and at most one flip."""
+    import numpy as np
+    (xx, xy), (yx, yy) = shift_x, shift_y
+    m = np.array([[xx, yx], [-xy, -yy]], float)
+    det = float(np.linalg.det(m))
+    mirrored = det < 0
+    rotation = math.degrees(math.atan2(m[1, 0], m[0, 0]))       # where machine +X points in the picture
+    if transform is not None:
+        th = math.radians(float(transform.rotate or 0.0))
+        r = np.array([[math.cos(th), -math.sin(th)], [math.sin(th), math.cos(th)]])
+        f = np.diag([-1.0 if transform.flip_y else 1.0, -1.0 if transform.flip_x else 1.0])
+        p = f @ r
+    else:
+        p = np.eye(2)
+    q = p @ np.linalg.inv(m)
+    u, _, vt = np.linalg.svd(q)                                   # nearest rotation/reflection (scale removed)
+    q = u @ vt
+    flip_y = bool(np.linalg.det(q) < 0)
+    if flip_y:
+        q = np.diag([-1.0, 1.0]) @ q                              # Q = F . R with F a left-right flip
+    rotate = math.degrees(math.atan2(q[1, 0], q[0, 0]))
+    rotate = round(((rotate + 180.0) % 360.0) - 180.0, 2)
+    if abs(rotate) < 0.005:
+        rotate = 0.0
+    current = (round((((float(transform.rotate or 0.0)) + 180.0) % 360.0) - 180.0, 2), bool(transform.flip_x),
+               bool(transform.flip_y)) if transform is not None else (0.0, False, False)
+    # the same picture can be had two ways (flip both = rotate 180): compare what they do, not the settings
+    needed = abs(((rotation + 180.0) % 360.0) - 180.0) > 0.05 or mirrored
+    return {"mirrored": mirrored, "rotation_deg": round(rotation, 2), "needs_correction": needed,
+            "correction": {"rotate": rotate, "flip_x": False, "flip_y": flip_y}, "current": {
+                "rotate": current[0], "flip_x": current[1], "flip_y": current[2]}}
+
+
 def measure_units_per_pixel(machine: Any, camera: Any, nozzle: Any = None, distance: float = 1.0,
                             settle: float = 0.4, template_size: float = 0.15, min_score: float = 0.6,
                             linearity: float = 0.15, takeup: float = 0.3) -> dict:
@@ -159,9 +200,8 @@ def measure_units_per_pixel(machine: Any, camera: Any, nozzle: Any = None, dista
             "points": points,                 # [mm, px x, px y] for half and full distance, per axis
             "image_size": [w, h],
             "field_of_view_mm": [round(w * distance / len_x, 2), round(h * distance / len_y, 2)],
-            "rotation_deg": round(math.degrees(math.atan2(-xy, xx)), 2),
-            "mirrored_x": bool(xx < 0),
-            "mirrored_y": bool(yy > 0),
+            # the picture's orientation and the transform that puts it right (+X right, +Y up): see orientation()
+            **orientation((xx, xy), (yx, yy), getattr(camera.settings, "transform", None)),
         },
     }
 

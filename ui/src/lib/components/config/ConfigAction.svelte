@@ -6,6 +6,7 @@
 	import type { ActionId, LayoutContext } from '#lib/config/layouts.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import DevicePicker from './DevicePicker.svelte';
+	import { correctionText, describeOrientation, type Orientation } from '#lib/config/orientation.js';
 	import { Crosshair, Info, Power, PowerOff, Ruler, CircleAlert, CircleCheck } from '@lucide/svelte';
 
 	type Obj = Record<string, unknown>;
@@ -60,15 +61,15 @@
 		});
 
 	// as OpenPnP's Issues & Solutions: the measured mirror and rotation can be set right away
-	let orientation = $state<{ mirroredX: boolean; mirroredY: boolean; rotation: number } | null>(null);
+	let orientation = $state<Orientation | null>(null);
 	function applyOrientation() {
 		if (!orientation) return;
-		const t = (ctx.value.transform ?? {}) as Obj;
-		// mirrored in Y (machine +Y moves the picture down): flip about the X axis; in X: about the Y axis
-		if (orientation.mirroredY) set('transform.flip_x', !(t.flip_x as boolean));
-		if (orientation.mirroredX) set('transform.flip_y', !(t.flip_y as boolean));
-		if (Math.abs(orientation.rotation) > 0.05) set('transform.rotate', Math.round((Number(t.rotate ?? 0) - orientation.rotation) * 100) / 100);
-		result = { ok: true, text: 'Flip and rotation set from the measurement. Apply, then Measure again to check.' };
+		// the whole transform that puts the picture right (a turn; a flip only for a real mirror image)
+		const c = orientation.correction;
+		set('transform.rotate', c.rotate);
+		set('transform.flip_x', c.flip_x);
+		set('transform.flip_y', c.flip_y);
+		result = { ok: true, text: `Orientation set (${correctionText(orientation)}). Apply, then Measure again to check.` };
 		orientation = null;
 	}
 
@@ -82,7 +83,7 @@
 			set('units_per_pixel.x', r.value.x);
 			set('units_per_pixel.y', r.value.y);
 			const d = r.details ?? {};
-			orientation = { mirroredX: !!d.mirrored_x, mirroredY: !!d.mirrored_y, rotation: Number(d.rotation_deg ?? 0) };
+			orientation = d.needs_correction ? (d as unknown as Orientation) : null;
 			const extra = Object.entries(d)
 				.filter(([, v]) => typeof v !== 'object')
 				.map(([k, v]) => `${k.replaceAll('_', ' ')}: ${v}`)
@@ -175,9 +176,9 @@
 				<Button variant="outline" size="sm" disabled={busy || !ready || !saved} onclick={measureScale}><Ruler /> Measure</Button>
 			</div>
 			{#if !saved}<p class="text-[11px] text-warn">Apply the camera's changes first: measuring uses the saved camera.</p>{/if}
-			{#if orientation && (orientation.mirroredX || orientation.mirroredY || Math.abs(orientation.rotation) > 0.05)}
+			{#if orientation}
 				<div class="flex items-center gap-2 text-xs">
-					<span class="text-warn">The picture is {[orientation.mirroredX ? 'mirrored in X' : '', orientation.mirroredY ? 'mirrored in Y' : '', Math.abs(orientation.rotation) > 0.05 ? `rotated ${orientation.rotation.toFixed(2)}°` : ''].filter(Boolean).join(', ')}.</span>
+					<span class="text-warn">The picture is {describeOrientation(orientation)}.</span>
 					<Button size="sm" variant="outline" onclick={applyOrientation}>Apply orientation</Button>
 				</div>
 			{/if}
@@ -193,9 +194,9 @@
 			{#if ctx.value.location === undefined || [(ctx.value.location as Obj).x, (ctx.value.location as Obj).y, (ctx.value.location as Obj).z].some((v) => v === undefined || v === null)}
 				<p class="text-[11px] text-warn">Set the camera's location first (Position tab: X, Y and the Z where the nozzle tip is in focus).</p>
 			{:else if !saved}<p class="text-[11px] text-warn">Apply the camera's changes first: measuring uses the saved location.</p>{/if}
-			{#if orientation && (orientation.mirroredX || orientation.mirroredY || Math.abs(orientation.rotation) > 0.05)}
+			{#if orientation}
 				<div class="flex items-center gap-2 text-xs">
-					<span class="text-warn">The picture is {[orientation.mirroredX ? 'mirrored in X' : '', orientation.mirroredY ? 'mirrored in Y' : '', Math.abs(orientation.rotation) > 0.05 ? `rotated ${orientation.rotation.toFixed(2)}°` : ''].filter(Boolean).join(', ')}.</span>
+					<span class="text-warn">The picture is {describeOrientation(orientation)}.</span>
 					<Button size="sm" variant="outline" onclick={applyOrientation}>Apply orientation</Button>
 				</div>
 			{/if}

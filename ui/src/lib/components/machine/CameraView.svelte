@@ -4,6 +4,7 @@
 	import { tinker, fmt, idOf } from '#lib/api/client.svelte.js';
 	import { segmentItem } from '#lib/styles.js';
 	import StreamImg from './StreamImg.svelte';
+	import { correctionText, describeOrientation, type Orientation } from '#lib/config/orientation.js';
 	import LowBandwidthToggle from './LowBandwidthToggle.svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
@@ -76,7 +77,7 @@
 
 	type UppResult = {
 		value: { x: number; y: number };
-		details: { field_of_view_mm: number[]; rotation_deg: number; mirrored_x: boolean; mirrored_y: boolean; match: number[] };
+		details: Orientation & { field_of_view_mm: number[]; match: number[] };
 	};
 	let upp_result = $state<UppResult | null>(null);
 	const measuring = $derived(tinker.isBusy('config.capture'));
@@ -93,9 +94,7 @@
 		});
 	}
 
-	const orientationOff = $derived(
-		!!upp_result && (upp_result.details.mirrored_x || upp_result.details.mirrored_y || Math.abs(upp_result.details.rotation_deg) > 0.05)
-	);
+	const orientationOff = $derived(!!upp_result && upp_result.details.needs_correction);
 
 	async function saveUpp(fixOrientation = false) {
 		if (!upp_result) return;
@@ -106,16 +105,14 @@
 			{ op: 'set', path: `${cfgPath}.units_per_pixel.y`, value: v.y }
 		];
 		if (fixOrientation) {
-			// as for the settings page's "Apply orientation": mirrored in Y = flip about X, in X = flip about Y; the
-			// measured rotation is taken off
-			const t =
-				(await tinker.call<{ config: Record<string, unknown> }>('config.get', { path: cfgPath }).then(
-					(r) => (r.config.transform ?? {}) as Record<string, unknown>
-				)) ?? {};
-			if (d.mirrored_y) changes.push({ op: 'set', path: `${cfgPath}.transform.flip_x`, value: !t.flip_x });
-			if (d.mirrored_x) changes.push({ op: 'set', path: `${cfgPath}.transform.flip_y`, value: !t.flip_y });
-			if (Math.abs(d.rotation_deg) > 0.05)
-				changes.push({ op: 'set', path: `${cfgPath}.transform.rotate`, value: Math.round((Number(t.rotate ?? 0) - d.rotation_deg) * 100) / 100 });
+			// the server worked out the whole transform that puts the picture right (a turn, and a flip only for a
+			// real mirror image): set it as a whole, not as changes on top of the old one
+			const c = d.correction;
+			changes.push(
+				{ op: 'set', path: `${cfgPath}.transform.rotate`, value: c.rotate },
+				{ op: 'set', path: `${cfgPath}.transform.flip_x`, value: c.flip_x },
+				{ op: 'set', path: `${cfgPath}.transform.flip_y`, value: c.flip_y }
+			);
 		}
 		const r = await tinker.act('config.update', { changes });
 		if (r) upp_result = null;
@@ -171,7 +168,11 @@
 
 	function onClick(e: MouseEvent) {
 		// as OpenPnP: Shift+click moves; a plain click does nothing (a stray click mustn't move the head)
-		if (!movable || !e.shiftKey) return;
+		if (!movable) return;
+		if (!e.shiftKey) {
+			tinker.notify('info', 'Hold Shift and click to move there (as in OpenPnP: a plain click never moves the machine)');
+			return;
+		}
 		const target = toMachine(e);
 		if (target) tinker.act('camera.center_on', { camera: id, x: target.x, y: target.y, nozzle: headMounted ? null : tool });
 	}
@@ -225,7 +226,7 @@
 		<LowBandwidthToggle />
 		{#if movable}
 			<span class="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground">
-				<MousePointerClick class="size-3.5" /> Click in the image to move there
+				<MousePointerClick class="size-3.5" /> <kbd class="kbd">Shift</kbd>+click in the image to move there
 			</span>
 		{/if}
 	</div>
@@ -276,8 +277,8 @@
 		<div class="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-xs">
 			<span class="font-medium">Measured</span>
 			<span class="num">{fmt(upp?.x, 5)} × {fmt(upp?.y, 5)} → <b>{upp_result.value.x.toFixed(5)} × {upp_result.value.y.toFixed(5)}</b> mm/px</span>
-			<span class="text-muted-foreground">view {d.field_of_view_mm[0]} × {d.field_of_view_mm[1]} mm · rotated {d.rotation_deg}°</span>
-			{#if d.mirrored_x || d.mirrored_y}<span class="text-warn">mirrored in {d.mirrored_x ? 'X' : ''}{d.mirrored_y ? 'Y' : ''}: set {[d.mirrored_y ? 'flip X (vertical)' : '', d.mirrored_x ? 'flip Y (horizontal)' : ''].filter(Boolean).join(' and ')}</span>{/if}
+			<span class="text-muted-foreground">view {d.field_of_view_mm[0]} × {d.field_of_view_mm[1]} mm</span>
+			{#if d.needs_correction}<span class="text-warn">The picture is {describeOrientation(d)}: fix sets {correctionText(d)}</span>{/if}
 			<span class="ml-auto flex gap-1">
 				{#if orientationOff}<Button size="sm" onclick={() => saveUpp(true)}><Check /> Save + fix orientation</Button>{/if}
 				<Button size="sm" variant={orientationOff ? 'outline' : 'default'} onclick={() => saveUpp(false)}><Check /> Save{orientationOff ? ' mm/px only' : ''}</Button>

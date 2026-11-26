@@ -254,7 +254,7 @@ def test_measure_units_per_pixel_with_the_nozzle(m):
     r = run(m, measure_units_per_pixel, m, cam, n1, 1.0, 0.15)              # goes to the camera, down into focus
     assert r["value"]["x"] == pytest.approx(0.02, rel=0.03) and r["value"]["y"] == pytest.approx(0.02, rel=0.03)
     d = r["details"]
-    assert not d["mirrored_x"] and not d["mirrored_y"] and abs(d["rotation_deg"]) < 1
+    assert not d["mirrored"] and abs(d["rotation_deg"]) < 1 and not d["needs_correction"]
     end = n1.compute_location()                                             # ends at the camera's location
     assert (end["x"], end["y"], end["z"]) == (pytest.approx(189.9), pytest.approx(49.5), pytest.approx(38.0, abs=0.2))
     assert r["details"]["at"] == {"x": 189.9, "y": 49.5, "z": 38.0}
@@ -262,9 +262,9 @@ def test_measure_units_per_pixel_with_the_nozzle(m):
     with pytest.raises(MachineError):
         run(m, measure_units_per_pixel, m, cam, n1, 1.0, 0.15)
     cam.settings.location = Location(x=189.9, y=49.5, z=38.0)
-    cam.settings.transform = ImageTransform(flip_y=True)    # left-right (OpenPnP's flipY): reported as mirrored X
+    cam.settings.transform = ImageTransform(flip_y=True)    # left-right (OpenPnP's flipY): a mirror image
     r = run(m, measure_units_per_pixel, m, cam, n1, 1.0, 0.15)
-    assert r["details"]["mirrored_x"] and not r["details"]["mirrored_y"]
+    assert r["details"]["mirrored"] and r["details"]["correction"] == {"rotate": 0.0, "flip_x": False, "flip_y": False}
 
 
 def test_units_per_pixel_through_the_api(api):
@@ -274,7 +274,7 @@ def test_units_per_pixel_through_the_api(api):
                                                "args": {"camera": "bottom", "object": "nozzle/N1", "distance": 0.5}})
     assert r.status_code == 200, r.text
     v = r.json()["result"]
-    assert v["value"]["x"] == pytest.approx(0.02, rel=0.05) and v["details"]["mirrored_x"] is False
+    assert v["value"]["x"] == pytest.approx(0.02, rel=0.05) and v["details"]["mirrored"] is False
 
 
 def test_frames_are_decoded_only_on_demand(m):
@@ -408,9 +408,29 @@ def test_measure_units_per_pixel_with_a_head_camera(m):
     r = m.submit(measure_units_per_pixel, m, cam, None, 1.0, 0.15).result(timeout=30)
     assert r["value"]["x"] == pytest.approx(0.04, rel=0.03) and r["value"]["y"] == pytest.approx(0.04, rel=0.03)
     d = r["details"]
-    assert not d["mirrored_x"] and not d["mirrored_y"] and abs(d["rotation_deg"]) < 1
+    assert not d["mirrored"] and abs(d["rotation_deg"]) < 1 and not d["needs_correction"]
     here = cam.compute_location()
     assert (here["x"], here["y"]) == (pytest.approx(150.3), pytest.approx(100.2))     # back where it started
-    cam.settings.transform = ImageTransform(flip_x=True)                              # top-bottom flipped
-    r = m.submit(measure_units_per_pixel, m, cam, None, 1.0, 0.15).result(timeout=30)
-    assert r["details"]["mirrored_y"] and not r["details"]["mirrored_x"]
+    # whatever the picture's turn, the correction is the transform that puts it right (here: none at all), and an
+    # upside-down picture is a rotation, not two mirrors (bench, 2026-11-26: both flips + 180 cancelled out)
+    for t in (ImageTransform(flip_x=True), ImageTransform(rotate=180), ImageTransform(flip_x=True, flip_y=True),
+              ImageTransform(rotate=30)):
+        cam.settings.transform = t
+        r = m.submit(measure_units_per_pixel, m, cam, None, 1.0, 0.15).result(timeout=30)
+        d = r["details"]
+        assert d["needs_correction"] and d["mirrored"] == (t.flip_x != t.flip_y), t
+        assert d["correction"]["flip_y"] is False and d["correction"]["rotate"] == pytest.approx(0, abs=0.5), (t, d)
+
+
+def test_orientation_from_the_measured_moves():
+    """Synthetic shifts (pixels, rows down) for +1 mm of X and of Y, no transform set: what the fix is."""
+    from tinkerpnp.core.calibration import orientation
+    upright = orientation((10, 0), (0, -10), None)
+    assert not upright["needs_correction"] and upright["correction"] == {"rotate": 0.0, "flip_x": False, "flip_y": False}
+    upside_down = orientation((-10, 0), (0, 10), None)                  # X shows left, Y shows down
+    assert not upside_down["mirrored"] and abs(upside_down["correction"]["rotate"]) == pytest.approx(180)
+    assert upside_down["correction"]["flip_y"] is False
+    mirror = orientation((-10, 0), (0, -10), None)                      # left-right mirror image
+    assert mirror["mirrored"] and mirror["correction"] == {"rotate": 0.0, "flip_x": False, "flip_y": True}
+    turned = orientation((0, -10), (-10, 0), None)                      # X shows up, Y left: turned 90 CCW
+    assert turned["rotation_deg"] == pytest.approx(90) and turned["correction"]["rotate"] == pytest.approx(-90)
