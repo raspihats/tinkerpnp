@@ -840,23 +840,44 @@ class CameraBase(MachineObject):
             self.release()
 
     # ── capture ────────────────────────────────────────────────────────────────────────────────────────────────
+    def _reopen_delay(self) -> float:
+        """Seconds between attempts to open a missing device (the watchdog's reopen_delay, at least 0.5 s)."""
+        wd = getattr(self.settings, "watchdog", None)
+        return max(0.5, (wd.reopen_delay if wd is not None else 1000.0) / 1000.0)
+
     def _capture_loop(self) -> None:
         import logging
         log = logging.getLogger("tinkerpnp.camera")
         self.update(last_error=None)
-        try:
-            self.open_device()               # may set last_error itself (e.g. controls it couldn't set)
-        except Exception as exc:
-            log.error("%s: %s", self.name, exc)
-            self.update(last_error=str(exc), streaming=False)
-            with self._cond:
-                self._running = False
-                self._cond.notify_all()
+        logged = None
+        while True:
             try:
-                self.close_device()
-            except Exception:
-                pass
-            return
+                self.open_device()           # may set last_error itself (e.g. controls it couldn't set)
+                if logged is not None:
+                    log.info("%s: open again", self.name)
+                    self.update(last_error=None)
+                break
+            except Exception as exc:
+                if str(exc) != logged:       # log a change, not every retry
+                    log.error("%s: %s", self.name, exc)
+                    logged = str(exc)
+                self.update(last_error=str(exc), streaming=False)
+                try:
+                    self.close_device()
+                except Exception:
+                    pass
+                # unplugged? while anyone is watching, try again (it comes back when it's plugged in again)
+                delay = self._reopen_delay()
+                with self._cond:
+                    if self._stop.is_set() or (self._users == 0 and self._waiters == 0):
+                        self._running = False
+                        self._cond.notify_all()
+                        return
+                if self._stop.wait(delay):
+                    with self._cond:
+                        self._running = False
+                        self._cond.notify_all()
+                    return
         frames, t_fps = 0, time.monotonic()
         warm_until = time.monotonic() + self.settings.warmup / 1000.0
         last_decode = 0.0

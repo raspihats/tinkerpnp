@@ -1,4 +1,5 @@
 <script lang="ts">
+	import * as Alert from '#lib/components/ui/alert/index.js';
 	// Library: parts, packages and boards (and the KiCad import for boards). Items are edited as JSON for now.
 	import { tinker, RpcError } from '#lib/api/client.svelte.js';
 	import { segmentItem } from '#lib/styles.js';
@@ -7,7 +8,7 @@
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
-	import { Search, Plus, Save, Trash2, FileUp, CircleX, Library } from '@lucide/svelte';
+	import { Search, Plus, Save, Trash2, FileUp, Library, CircleAlert } from '@lucide/svelte';
 
 	type Item = { id: string; name?: string; revision: number; [k: string]: unknown };
 	const COLLECTIONS = [
@@ -175,9 +176,15 @@
 				<Card.Content class="flex flex-col gap-2">
 					<textarea class="min-h-96 w-full rounded-lg border border-input bg-well p-3 font-mono text-xs leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring/50" spellcheck="false" bind:value={text}></textarea>
 					{#if problems.length}
-						<ul class="rounded-lg border border-alarm/30 bg-alarm/5 p-3 text-xs leading-5">
-							{#each problems as p (p.path + p.message)}<li class="flex gap-1.5"><CircleX class="mt-0.5 size-3.5 shrink-0 text-alarm" /><span><span class="font-mono">{p.path}</span> {p.message}</span></li>{/each}
-						</ul>
+						<Alert.Root variant="destructive">
+							<CircleAlert />
+							<Alert.Title>Not saved: {problems.length} problem{problems.length === 1 ? '' : 's'}</Alert.Title>
+							<Alert.Description>
+								<ul class="mt-1 list-disc pl-4">
+									{#each problems as p (p.path + p.message)}<li><span class="font-mono">{p.path}</span> {p.message}</li>{/each}
+								</ul>
+							</Alert.Description>
+						</Alert.Root>
 					{/if}
 					<p class="text-xs text-muted-foreground">Lengths in mm (or with a unit, e.g. <code>"0.5 mm"</code>), angles in degrees.</p>
 				</Card.Content>

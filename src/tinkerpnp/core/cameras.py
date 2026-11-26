@@ -352,12 +352,38 @@ def resolve_device(sel: DeviceSelector) -> tuple[str, str]:
         return fits[0]["path"], "+".join(ident) + (" (not at its path)" if sel.path else "")
     if ident and len(fits) > 1 and not sel.path:
         return fits[0]["path"], "+".join(ident) + " (first of several)"
-    wanted = ", ".join(f"{k}={v}" for k, v in sel.model_dump().items() if v)
-    found = "; ".join(f"{d['path']} {d['usb_id'] or ''} {d['usb_serial'] or ''} {d['name'] or ''} "
-                      f"{' '.join(l for l in d['links'] if '/by-path/' in l)}".strip() for d in devices) or "none"
-    why = (f"{len(fits)} cameras fit {', '.join(ident)} and none is at {sel.path}" if len(fits) > 1
-           else "no camera matches")
-    raise MachineError("not_found", f"{why}: wanted {wanted} (present: {found})", what="camera_device")
+    raise MachineError("not_found", _not_found_message(sel, ident, fits, devices), what="camera_device",
+                       wanted={k: v for k, v in sel.model_dump().items() if v},
+                       present=[_describe(d) for d in devices if d["usb_id"]])
+
+
+def usb_port(link_or_path: str | None) -> str | None:
+    """The USB port number in a /dev/v4l/by-path link (…-usb-0:2:1.0-video-index0 -> "2"), if any."""
+    m = re.search(r"usb-[\d.]+:([\d.]+):[\d.]+-video", link_or_path or "")
+    return m.group(1) if m else None
+
+
+def _describe(d: dict) -> str:
+    """video2 (USB port 3, 0c45:6366 SN0001)"""
+    port = next((usb_port(l) for l in d["links"] if usb_port(l)), None)
+    bits = [f"USB port {port}" if port else None, d["usb_id"], d["usb_serial"]]
+    return f"{os.path.basename(d['path'])} ({', '.join(b for b in bits if b)})"
+
+
+def _not_found_message(sel: Any, ident: dict, fits: list, devices: list) -> str:
+    """One or two short sentences: what's missing, and which cameras are there (USB ones only)."""
+    usb = [d for d in devices if d["usb_id"]]
+    present = "; ".join(_describe(d) for d in usb) if usb else "none"
+    port = usb_port(sel.path)
+    if sel.path and not ident:
+        what = f"No camera at USB port {port}" if port else f"No camera at {sel.path}"
+        return f"{what}. Unplugged, or in another port? USB cameras found: {present}."
+    if len(fits) > 1:
+        where = f"USB port {port}" if port else sel.path
+        return (f"None of the {len(fits)} matching cameras is at {where}, so it isn't clear which is meant. "
+                f"USB cameras found: {present}.")
+    wanted = ", ".join(f"{k} {v}" for k, v in ident.items())
+    return f"No camera with {wanted}. Unplugged? USB cameras found: {present}."
 
 
 # OpenCV properties for common V4L2 control names, used when v4l2-ctl isn't installed

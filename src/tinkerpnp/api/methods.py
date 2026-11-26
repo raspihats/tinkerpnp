@@ -969,13 +969,15 @@ def config_capture_helpers(ctx: "Connection") -> list:
     return [{"name": "location", "args": {"object": "nozzle/<id>, camera/<id> or axis/<id>"},
              "description": "Where the object really is now (the position is read back from the controller): "
                             "e.g. a bottom camera's location = the nozzle centred over it, in focus"},
-            {"name": "units_per_pixel", "args": {"camera": "camera id (up-looking, machine-mounted)",
-                                                 "object": "nozzle/<id> (moved to the camera's location)",
+            {"name": "units_per_pixel", "args": {"camera": "camera id (up-looking machine camera, or a head camera)",
+                                                 "object": "up-looking: nozzle/<id> (moved to the camera's "
+                                                           "location); head camera: not needed",
                                                  "distance": "mm to move in X and Y (default 1)"},
-             "description": "Moves the nozzle to the camera's location (safe Z, then X/Y, then down to the focus Z), "
-                            "then by `distance` in X and in Y at that height, and measures how far the image moved "
-                            "(template matching). Returns mm per pixel, plus whether the image is mirrored or "
-                            "rotated. The nozzle ends at the camera's location"}]
+             "description": "Up-looking: moves the nozzle to the camera's location (safe Z, then X/Y, then down to "
+                            "the focus Z), then by `distance` in X and in Y. Head camera: moves the camera itself by "
+                            "`distance` over whatever is under it (any board with detail). Measures how far the "
+                            "picture moved (template matching): mm per pixel, plus whether the image is mirrored or "
+                            "rotated"}]
 
 
 @rpc.method("config.capture")
@@ -988,19 +990,23 @@ async def config_capture(ctx: "Connection", field: str, args: dict, **kw: Any) -
     if helper not in ("location", "units_per_pixel"):
         raise RpcError("invalid_params", f"unknown helper {helper!r}; see config.capture_helpers")
     machine = ctx.app_state.machine
-    obj = machine.planner.resolve(str((args or {}).get("object", "")))
     if helper == "units_per_pixel":
         from ..core.calibration import measure_units_per_pixel
         from ..core.objects import Nozzle
-        if not isinstance(obj, Nozzle):
-            raise RpcError("invalid_params", "object must be a nozzle")
         camera = machine.objects.get(f"camera/{(args or {}).get('camera')}")
         if camera is None:
             raise RpcError("not_found", f"no camera {args.get('camera')!r}", what="camera", id=args.get("camera"))
+        obj = None
+        if camera.head is None:                      # up-looking machine camera: measured with a nozzle
+            obj = machine.planner.resolve(str((args or {}).get("object", "")))
+            if not isinstance(obj, Nozzle):
+                raise RpcError("invalid_params", "object must be a nozzle")
         machine.planner.require_ready()
         distance = float(args.get("distance", 1.0))
         r = await _run(ctx, measure_units_per_pixel, machine, camera, obj, distance)
-        return {"field": field, "value": r["value"], "details": r["details"], "from": helper, "object": obj.name}
+        return {"field": field, "value": r["value"], "details": r["details"], "from": helper,
+                "object": obj.name if obj is not None else camera.name}
+    obj = machine.planner.resolve(str((args or {}).get("object", "")))
 
     def read() -> dict:
         for driver in machine.drivers():       # the true position, not the last target

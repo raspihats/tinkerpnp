@@ -145,7 +145,7 @@ def test_selectors_must_all_fit(fake_sys):
         resolve_device(DeviceSelector(usb_serial="SN0001", usb_id="0c45:6340"))
     with pytest.raises(MachineError) as e:
         resolve_device(DeviceSelector(usb_id="dead:beef"))
-    assert "present:" in e.value.message and "0c45:6366" in e.value.message
+    assert e.value.message.startswith("No camera with usb_id dead:beef") and "0c45:6366" in e.value.message
 
 
 def test_the_port_decides_between_identical_cameras(fake_sys):
@@ -173,7 +173,7 @@ def test_the_port_decides_between_identical_cameras(fake_sys):
     (by_path / "usb-0:3:1.0-video-index0").unlink()
     with pytest.raises(MachineError) as e:
         resolve_device(old)
-    assert "2 cameras fit" in e.value.message
+    assert "None of the 2 matching cameras" in e.value.message
 
 
 def test_a_unique_camera_is_found_in_another_port(fake_sys):
@@ -359,3 +359,58 @@ def test_openpnp_transforms_scale_offset_white_balance_deinterlace(m):
     assert cam.apply_transform(img)[3 + 4, 5 + 4].mean() == 200   # the corner square moved right 5, down 3
     cam.settings.transform = ImageTransform(deinterlace=True)
     assert cam.apply_transform(img)[1:39].min() > 0              # the dark field is gone
+
+
+def test_a_camera_missing_from_its_port_is_reported_plainly(fake_sys):
+    """Path only (the usual for two look-alike cameras) and nothing there: say so, list the USB cameras."""
+    by_path = fake_sys / "v4l" / "by-path"
+    by_path.mkdir()
+    (by_path / "platform-x-usb-0:3:1.0-video-index0").symlink_to(fake_sys / "video2")
+    with pytest.raises(MachineError) as e:
+        resolve_device(DeviceSelector(path=str(by_path / "platform-x-usb-0:2:1.0-video-index0")))
+    msg = e.value.message
+    assert msg.startswith("No camera at USB port 2.") and "video2 (USB port 3, 0c45:6366, SN0001)" in msg
+    assert "cameras fit" not in msg
+
+
+def test_a_missing_camera_is_retried_while_someone_watches(m, monkeypatch):
+    """Unplugged camera: the error shows, and it streams again by itself once it's back (no reload needed)."""
+    cam = m.get("camera", "top")
+    cam.settings.fps = 30
+    real = cam.open_device
+    state = {"present": False}
+
+    def flaky():
+        if not state["present"]:
+            raise MachineError("not_found", "No camera at USB port 2.")
+        real()
+    monkeypatch.setattr(cam, "open_device", flaky)
+    monkeypatch.setattr(cam, "_reopen_delay", lambda: 0.1)
+    cam.acquire()
+    try:
+        time.sleep(0.3)
+        assert cam.status()["last_error"].startswith("No camera") and not cam.status()["streaming"]
+        state["present"] = True                                   # plugged in again
+        assert cam.wait_frame(cam._seq, 3) is not None
+        assert cam.status()["last_error"] is None and cam.status()["streaming"]
+    finally:
+        cam.release()
+
+
+def test_measure_units_per_pixel_with_a_head_camera(m):
+    """The head camera moves over the (simulated) bed: mm/px from the machine's own steps, no fiducial needed; a
+    mirrored camera is reported the same way as for an up-looking one."""
+    from tinkerpnp.core.calibration import measure_units_per_pixel
+    run(m, m.enable)
+    cam = m.get("camera", "top")
+    cam.settings.sim_fiducials = [{"x": 151.3, "y": 100.6, "diameter": 1.0}, {"x": 149.2, "y": 99.1, "diameter": 0.7}]
+    run(m, m.planner.move_to, cam, {"x": 150.3, "y": 100.2})
+    r = m.submit(measure_units_per_pixel, m, cam, None, 1.0, 0.15).result(timeout=30)
+    assert r["value"]["x"] == pytest.approx(0.04, rel=0.03) and r["value"]["y"] == pytest.approx(0.04, rel=0.03)
+    d = r["details"]
+    assert not d["mirrored_x"] and not d["mirrored_y"] and abs(d["rotation_deg"]) < 1
+    here = cam.compute_location()
+    assert (here["x"], here["y"]) == (pytest.approx(150.3), pytest.approx(100.2))     # back where it started
+    cam.settings.transform = ImageTransform(flip_x=True)                              # top-bottom flipped
+    r = m.submit(measure_units_per_pixel, m, cam, None, 1.0, 0.15).result(timeout=30)
+    assert r["details"]["mirrored_y"] and not r["details"]["mirrored_x"]

@@ -1,11 +1,12 @@
 <script lang="ts">
+	import * as Alert from '#lib/components/ui/alert/index.js';
 	// Buttons inside a settings group that measure a value on the machine (as OpenPnP's capture buttons) or test the
 	// object. Measured values go into the form only: Apply saves them.
 	import { tinker } from '#lib/api/client.svelte.js';
 	import type { ActionId, LayoutContext } from '#lib/config/layouts.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import DevicePicker from './DevicePicker.svelte';
-	import { Crosshair, Info, Power, PowerOff, Ruler } from '@lucide/svelte';
+	import { Crosshair, Info, Power, PowerOff, Ruler, CircleAlert, CircleCheck } from '@lucide/svelte';
 
 	type Obj = Record<string, unknown>;
 
@@ -76,7 +77,7 @@
 			const r = await tinker.call<{ value: { x: number; y: number }; details?: Obj }>('config.capture', {
 				field: 'units_per_pixel',
 				from: 'units_per_pixel',
-				args: { camera: id, object: `nozzle/${nozzle}`, distance }
+				args: ctx.onHead ? { camera: id, distance } : { camera: id, object: `nozzle/${nozzle}`, distance }
 			});
 			set('units_per_pixel.x', r.value.x);
 			set('units_per_pixel.y', r.value.y);
@@ -164,8 +165,22 @@
 			<Button variant="outline" size="sm" disabled={busy || !ready || !nozzles.length} onclick={captureLocation}><Crosshair /> Capture nozzle location</Button>
 		</div>
 	{:else if action === 'measure-units-per-pixel'}
-		{#if ctx.onHead || ctx.value.looking === 'down'}
-			<p class="text-xs text-muted-foreground">Measuring is available for up-looking cameras on the machine. Enter the values by hand (e.g. image a ruler).</p>
+		{#if !ctx.onHead && ctx.value.looking === 'down'}
+			<p class="text-xs text-muted-foreground">A down-looking camera on the machine can't be moved: enter the values by hand.</p>
+		{:else if ctx.onHead}
+			<div class="flex flex-wrap items-center gap-2 text-xs">
+				<span>With a board (any detail) in focus under the camera, move the camera</span>
+				<input class="h-8 w-16 rounded-md border border-input bg-background px-2 text-right font-mono text-xs" type="number" min="0.1" step="0.1" bind:value={distance} />
+				<span>mm in X and Y and measure how far the picture moves:</span>
+				<Button variant="outline" size="sm" disabled={busy || !ready || !saved} onclick={measureScale}><Ruler /> Measure</Button>
+			</div>
+			{#if !saved}<p class="text-[11px] text-warn">Apply the camera's changes first: measuring uses the saved camera.</p>{/if}
+			{#if orientation && (orientation.mirroredX || orientation.mirroredY || Math.abs(orientation.rotation) > 0.05)}
+				<div class="flex items-center gap-2 text-xs">
+					<span class="text-warn">The picture is {[orientation.mirroredX ? 'mirrored in X' : '', orientation.mirroredY ? 'mirrored in Y' : '', Math.abs(orientation.rotation) > 0.05 ? `rotated ${orientation.rotation.toFixed(2)}°` : ''].filter(Boolean).join(', ')}.</span>
+					<Button size="sm" variant="outline" onclick={applyOrientation}>Apply orientation</Button>
+				</div>
+			{/if}
 		{:else}
 			<div class="flex flex-wrap items-center gap-2 text-xs">
 				<span>Moves</span>
@@ -240,8 +255,12 @@
 			{#if !saved}<span class="text-warn">Apply first: the test uses the saved settings.</span>{/if}
 		</div>
 	{/if}
-	{#if (action === 'capture-camera-location' || action === 'measure-units-per-pixel' || action === 'advanced-calibration') && !ready && !ctx.onHead}
+	{#if (action === 'capture-camera-location' || action === 'measure-units-per-pixel' || action === 'advanced-calibration') && !ready && (!ctx.onHead || action !== 'capture-camera-location')}
 		<p class="text-[11px] text-muted-foreground">Enable and home the machine to use this.</p>
 	{/if}
-	{#if result}<p class="text-xs {result.ok ? 'text-ok' : 'text-alarm'}">{result.text}</p>{/if}
+	{#if result?.ok}
+		<p class="flex items-center gap-1.5 text-xs text-ok"><CircleCheck class="size-3.5 shrink-0" />{result.text}</p>
+	{:else if result}
+		<Alert.Root variant="destructive"><CircleAlert /><Alert.Title>That didn't work</Alert.Title><Alert.Description>{result.text}</Alert.Description></Alert.Root>
+	{/if}
 </div>

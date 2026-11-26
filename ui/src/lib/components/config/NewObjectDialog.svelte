@@ -1,4 +1,5 @@
 <script lang="ts">
+	import * as Alert from '#lib/components/ui/alert/index.js';
 	// "New camera…" etc., as OpenPnP's class selection dialog: pick the type, and the object is created right away with
 	// defaults, then set up on its tabs. Only what the configuration can't be valid without is asked here (which
 	// driver an axis is on, which axes a nozzle moves with, ...).
@@ -7,7 +8,7 @@
 	import { schemaAt, type Defs, type Schema } from '#lib/config/schema.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import LayoutField from './LayoutField.svelte';
-	import { Plus, X } from '@lucide/svelte';
+	import { Plus, X, CircleAlert } from '@lucide/svelte';
 
 	type Obj = Record<string, unknown>;
 	type TypeInfo = { kind: string; type: string; title: string; description: string; plugin: string | null; schema: Schema & { $defs?: Defs } };
@@ -208,10 +209,17 @@
 		<p class="text-xs text-muted-foreground">Everything else starts at its default; set it up on the {label}'s tabs after creating it.</p>
 
 		{#if error}
-			<div class="rounded-lg border border-alarm/30 bg-alarm/5 p-3 text-xs leading-5">
-				<p class="text-alarm">{error.message}</p>
-				{#each error.problems as p (p.path + p.message)}<p><span class="font-mono">{p.path}</span>: {p.message}</p>{/each}
-			</div>
+			<Alert.Root variant="destructive">
+				<CircleAlert />
+				<Alert.Title>{error.message}</Alert.Title>
+				{#if error.problems.length}
+					<Alert.Description>
+						<ul class="mt-1 list-disc pl-4">
+							{#each error.problems as p (p.path + p.message)}<li><span class="font-mono">{p.path}</span>: {p.message}</li>{/each}
+						</ul>
+					</Alert.Description>
+				{/if}
+			</Alert.Root>
 		{/if}
 
 		<div class="flex justify-end gap-2">

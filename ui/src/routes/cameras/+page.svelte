@@ -1,4 +1,5 @@
 <script lang="ts">
+	import * as Alert from '#lib/components/ui/alert/index.js';
 	import { tinker, RpcError, fmt } from '#lib/api/client.svelte.js';
 	import * as Card from '#lib/components/ui/card/index.js';
 	import * as Table from '#lib/components/ui/table/index.js';
@@ -10,7 +11,7 @@
 	import { segmentItem } from '#lib/styles.js';
 	import StreamImg from '#lib/components/machine/StreamImg.svelte';
 	import LowBandwidthToggle from '#lib/components/machine/LowBandwidthToggle.svelte';
-	import { Camera, RefreshCw, SlidersHorizontal, Aperture, Usb, ScanSearch, Info, TriangleAlert, Save } from '@lucide/svelte';
+	import { Camera, RefreshCw, SlidersHorizontal, Aperture, Usb, ScanSearch, Info, Save, RotateCw, CircleAlert } from '@lucide/svelte';
 
 	type CameraInfo = {
 		id: string;
@@ -175,7 +176,14 @@
 					</dd>
 				</dl>
 				{#if s.last_error}
-					<p class="flex items-center gap-1.5 rounded-md bg-alarm/10 px-2.5 py-1.5 text-xs text-alarm"><TriangleAlert class="size-3.5 shrink-0" /> {s.last_error}</p>
+					<Alert.Root variant="destructive">
+						<CircleAlert />
+						<Alert.Title>{String(s.last_error).startsWith('No camera') ? 'Camera not connected' : 'Camera problem'}</Alert.Title>
+						<Alert.Description>{s.last_error}</Alert.Description>
+						<Alert.Action>
+							<Button variant="outline" size="xs" onclick={() => tinker.act('camera.reopen', { id: c.id })}><RotateCw /> Try again</Button>
+						</Alert.Action>
+					</Alert.Root>
 				{/if}
 				{#if controls[c.id]}
 					{@const ctl = controls[c.id]}
@@ -189,7 +197,7 @@
 							{/if}
 						</div>
 						{#if typeof ctl === 'string'}
-							<p class="p-3 text-xs text-alarm">{ctl}</p>
+							<div class="p-3"><Alert.Root><Info /><Alert.Title>Controls not available</Alert.Title><Alert.Description>{ctl}</Alert.Description></Alert.Root></div>
 						{:else}
 							<Table.Root>
 								<Table.Body>

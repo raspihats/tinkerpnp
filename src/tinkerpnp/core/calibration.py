@@ -68,53 +68,72 @@ def _shift(reference: Any, moved: Any, template_size: float) -> tuple[float, flo
     return float(fx - x0), float(fy - y0), float(score)      # plain floats: numpy types don't go into JSON
 
 
-def measure_units_per_pixel(machine: Any, camera: Any, nozzle: Any, distance: float = 1.0, settle: float = 0.4,
-                            template_size: float = 0.15, min_score: float = 0.6, linearity: float = 0.15,
-                            takeup: float = 0.3) -> dict:
-    """Run on the motion thread. As OpenPnP's camera calibration, the nozzle first goes to the camera's location (safe
+def measure_units_per_pixel(machine: Any, camera: Any, nozzle: Any = None, distance: float = 1.0,
+                            settle: float = 0.4, template_size: float = 0.15, min_score: float = 0.6,
+                            linearity: float = 0.15, takeup: float = 0.3) -> dict:
+    """Run on the motion thread. Moves by `distance` in X and in Y and measures how far the picture moved.
+
+    Up-looking machine camera: as OpenPnP's camera calibration, the nozzle first goes to the camera's location (safe
     Z, then X/Y, then down to the focus Z there): measuring wherever the nozzle happens to be (e.g. up at safe Z,
     out of focus) matches whatever else moves with the head and gives a wrong but consistent-looking scale (bench,
-    2026-11-25). It ends at the camera's location."""
-    if camera.settings.looking != "up" or camera.head is not None:
-        raise MachineError("invalid_params", f"{camera.name}: only machine-mounted, up-looking cameras")
+    2026-11-25). It ends at the camera's location.
+
+    Head camera (down-looking): the camera itself moves over whatever is under it (a board with some detail; no
+    fiducial needed, unlike OpenPnP's Issues & Solutions), from where it is now, and comes back there. The board
+    stands still, so its picture moves the other way: the sign is turned, so mirrored / rotated mean the same as for
+    an up-looking camera (+X should show as right, +Y as up)."""
     if not 0.05 <= distance <= 10:
         raise MachineError("invalid_params", "distance must be 0.05..10 mm")
-    loc = camera.settings.location
-    if loc is None or None in (loc.x, loc.y, loc.z):
-        raise MachineError("invalid_params", f"{camera.name}: set the camera's location (X, Y and the Z where the "
-                                             "nozzle tip is in focus) first: units per pixel are measured there")
     planner = machine.planner
-    start = {"x": loc.x, "y": loc.y, "z": loc.z}
-    planner.move_to(nozzle, start)               # safe Z first, then X/Y, then down into focus
+    if camera.head is not None:
+        if camera.settings.looking != "down":
+            raise MachineError("invalid_params", f"{camera.name}: head cameras are measured looking down")
+        mover, sign, what = camera, -1.0, "the board"
+        here = camera.compute_location()
+        start = {"x": here["x"], "y": here["y"]}
+    else:
+        if camera.settings.looking != "up":
+            raise MachineError("invalid_params", f"{camera.name}: machine-mounted cameras are measured looking up")
+        if nozzle is None:
+            raise MachineError("invalid_params", "an up-looking camera is measured with a nozzle: give the nozzle")
+        loc = camera.settings.location
+        if loc is None or None in (loc.x, loc.y, loc.z):
+            raise MachineError("invalid_params", f"{camera.name}: set the camera's location (X, Y and the Z where "
+                                                 "the nozzle tip is in focus) first: units per pixel are measured "
+                                                 "there")
+        mover, sign, what = nozzle, 1.0, "the nozzle"
+        start = {"x": loc.x, "y": loc.y, "z": loc.z}
+        planner.move_to(nozzle, start)           # safe Z first, then X/Y, then down into focus
     camera.acquire()
     try:
         shifts, points = {}, {}
         for axis in ("x", "y"):
             # backlash: arrive at the start moving in the direction of the measurement, so the slack is taken up
             # before the reference picture (seen on the bench: ~0.05 mm in X)
-            planner.move_to(nozzle, {"x": start["x"], "y": start["y"], axis: start[axis] - takeup}, safe_z="none")
-            planner.move_to(nozzle, {"x": start["x"], "y": start["y"]}, safe_z="none")
+            planner.move_to(mover, {"x": start["x"], "y": start["y"], axis: start[axis] - takeup}, safe_z="none")
+            planner.move_to(mover, {"x": start["x"], "y": start["y"]}, safe_z="none")
             reference = _frame_after_move(camera, settle)
             h, w = reference.shape[:2]
             pts = []
             for d in (distance / 2, distance):
-                planner.move_to(nozzle, {axis: start[axis] + d}, safe_z="none")
+                planner.move_to(mover, {axis: start[axis] + d}, safe_z="none")
                 moved = _frame_after_move(camera, settle)
                 dx, dy, score = _shift(reference, moved, template_size)
+                dx, dy = sign * dx, sign * dy
                 if score < min_score:
-                    planner.move_to(nozzle, {"x": start["x"], "y": start["y"]}, safe_z="none")
-                    raise MachineError("vision_failed", f"{camera.name}: couldn't find the nozzle again after moving "
-                                                        f"{axis.upper()} {d:g} mm (match {score:.2f}); is it in focus "
-                                                        "and in the middle of the image?",
+                    planner.move_to(mover, {"x": start["x"], "y": start["y"]}, safe_z="none")
+                    raise MachineError("vision_failed", f"{camera.name}: couldn't find {what} again after moving "
+                                                        f"{axis.upper()} {d:g} mm (match {score:.2f}); is it in focus, "
+                                                        "with some detail in the middle of the picture?",
                                        result={"axis": axis, "score": round(score, 3)})
                 pts.append((d, dx, dy, score))
-            planner.move_to(nozzle, {"x": start["x"], "y": start["y"]}, safe_z="none")
+            planner.move_to(mover, {"x": start["x"], "y": start["y"]}, safe_z="none")
             (d1, x1, y1, s1), (d2, x2, y2, s2) = pts
             l1, l2 = math.hypot(x1, y1), math.hypot(x2, y2)
             if l1 < 1 or abs(l2 / l1 - d2 / d1) > linearity * d2 / d1:
                 raise MachineError("vision_failed", f"{camera.name}: the image moved {l1:.1f} px for {d1:g} mm but "
                                                     f"{l2:.1f} px for {d2:g} mm in {axis.upper()} (not proportional): "
-                                                    "something blurry may be matched; is the nozzle in focus?",
+                                                    f"something blurry may be matched; is {what} in focus?",
                                    result={"axis": axis, "pixels": [round(l1, 2), round(l2, 2)]})
             # least-squares line through the origin and both points
             k = d1 * d1 + d2 * d2
@@ -133,7 +152,7 @@ def measure_units_per_pixel(machine: Any, camera: Any, nozzle: Any, distance: fl
         "value": {"x": round(distance / len_x, 6), "y": round(distance / len_y, 6)},
         "details": {
             "distance_mm": distance,
-            "at": start,                      # the camera's location: where the nozzle was measured (and is now)
+            "at": start,                      # where it was measured (and is now)
             "pixels_for_x": [round(xx, 2), round(xy, 2)],
             "pixels_for_y": [round(yx, 2), round(yy, 2)],
             "match": [round(sx, 3), round(sy, 3)],

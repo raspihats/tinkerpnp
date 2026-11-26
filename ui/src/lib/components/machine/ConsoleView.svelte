@@ -1,4 +1,5 @@
 <script lang="ts">
+	import * as Alert from '#lib/components/ui/alert/index.js';
 	import { tick } from 'svelte';
 	import { tinker, RpcError, idOf } from '#lib/api/client.svelte.js';
 	import * as Card from '#lib/components/ui/card/index.js';
@@ -9,7 +10,7 @@
 	import { Label } from '#lib/components/ui/label/index.js';
 	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
 	import { segmentItem } from '#lib/styles.js';
-	import { TriangleAlert, SquareTerminal, Eraser, SendHorizontal, ChevronRight } from '@lucide/svelte';
+	import { CircleAlert, TriangleAlert, SquareTerminal, Eraser, SendHorizontal, ChevronRight } from '@lucide/svelte';
 
 	// compact: as a dashboard panel (fixed height, no frame of its own, fewer extras)
 	let { compact = false }: { compact?: boolean } = $props();
@@ -207,7 +208,11 @@
 
 			<div class="flex flex-col gap-2 border-t p-3">
 				{#if driverStatus?.last_error}
-					<p class="flex items-center gap-1.5 text-xs text-alarm"><TriangleAlert class="size-3.5" /> {driverStatus.last_error}</p>
+					<Alert.Root variant="destructive">
+						<CircleAlert />
+						<Alert.Title>Controller error</Alert.Title>
+						<Alert.Description>{driverStatus.last_error}</Alert.Description>
+					</Alert.Root>
 				{/if}
 				{#if isGrbl && !compact}
 					<div class="flex flex-wrap gap-1">

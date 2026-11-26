@@ -6,6 +6,7 @@
 	//   poll: one snapshot at a time at `fps` (connections are short), for thumbnails and secondary views
 	import { onMount } from 'svelte';
 	import { streamSettings } from '#lib/stream.svelte.js';
+	import { tinker } from '#lib/api/client.svelte.js';
 
 	// a 1x1 transparent GIF: switching an <img> to it is what makes the browser abort a running MJPEG download
 	// (removing the element isn't enough in Chrome)
@@ -42,7 +43,29 @@
 		const q = p.toString();
 		return q ? `?${q}` : '';
 	}
-	const liveSrc = $derived(visible ? `/cameras/${camera}/stream.mjpg${query(true)}` : BLANK);
+	// reconnect by itself: when the connection breaks (server restarted, network), and when the camera streams
+	// again after being unavailable (unplugged and plugged in) - a new URL makes the browser open a new stream
+	let attempt = $state(0);
+	let retryTimer: ReturnType<typeof setTimeout> | null = null;
+	function reconnect(delay = 1500) {
+		if (retryTimer) return;
+		retryTimer = setTimeout(() => {
+			retryTimer = null;
+			attempt += 1;
+		}, delay);
+	}
+	const streaming = $derived(tinker.status[`camera/${camera}`]?.streaming === true);
+	let wasStreaming = true;
+	$effect(() => {
+		if (streaming && !wasStreaming) reconnect(200);
+		wasStreaming = streaming;
+	});
+	const liveSrc = $derived.by(() => {
+		if (!visible) return BLANK;
+		const q = query(true);
+		const r = attempt ? `${q ? '&' : '?'}r=${attempt}` : '';
+		return `/cameras/${camera}/stream.mjpg${q}${r}`;
+	});
 
 	onMount(() => {
 		const update = () => (visible = document.visibilityState === 'visible');
@@ -50,6 +73,7 @@
 		document.addEventListener('visibilitychange', update);
 		return () => {
 			document.removeEventListener('visibilitychange', update);
+			if (retryTimer) clearTimeout(retryTimer);
 			if (img && mode === 'live') img.src = BLANK; // closing the view: end the stream now
 		};
 	});
@@ -86,7 +110,7 @@
 </script>
 
 {#if mode === 'live'}
-	<img bind:this={img} src={liveSrc} {alt} class={className} {...rest} />
+	<img bind:this={img} src={liveSrc} {alt} class={className} onerror={() => visible && reconnect()} {...rest} />
 {:else if polled}
 	<img bind:this={img} src={polled} {alt} class={className} {...rest} />
 {:else}

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import * as Alert from '#lib/components/ui/alert/index.js';
 	// Configuration, laid out as OpenPnP's Machine Setup: the machine as a tree on the left (New … on each group opens a
 	// type chooser and creates the object right away), and the selected object's settings on the right in hand-made
 	// tabs (lib/config/layouts.ts) with Apply / Reset. "All settings" has every field of the type's schema (also plugin
@@ -13,32 +14,11 @@
 	import SchemaFields from '#lib/components/config/SchemaFields.svelte';
 	import LayoutTab from '#lib/components/config/LayoutTab.svelte';
 	import NewObjectDialog from '#lib/components/config/NewObjectDialog.svelte';
+	import CameraView from '#lib/components/machine/CameraView.svelte';
 	import { segmentItem } from '#lib/styles.js';
 	import { layoutFor, type LayoutContext } from '#lib/config/layouts.js';
 	import type { Defs, Schema } from '#lib/config/schema.js';
-	import {
-		Camera,
-		Check,
-		ChevronDown,
-		ChevronRight,
-		CircleCheck,
-		CircleX,
-		Cpu,
-		Crosshair,
-		Disc,
-		Factory,
-		History,
-		Layers,
-		Move3d,
-		Plus,
-		RotateCcw,
-		Search,
-		Settings2,
-		Trash2,
-		TriangleAlert,
-		Undo2,
-		Zap
-	} from '@lucide/svelte';
+	import { Camera, Check, ChevronDown, ChevronRight, CircleCheck, Cpu, Crosshair, Disc, Factory, History, Layers, Move3d, Plus, RotateCcw, Search, Settings2, Trash2, TriangleAlert, Undo2, Zap, CircleAlert } from '@lucide/svelte';
 
 	type JsonSchema = Schema & { $defs?: Defs };
 	type TypeInfo = { kind: string; type: string; title: string; description: string; plugin: string | null; schema: JsonSchema };
@@ -174,6 +154,23 @@
 		onHead: (selected ?? '').startsWith('heads.')
 	});
 	const layoutTabs = $derived(selected ? layoutFor(ctx) : []);
+
+	// as OpenPnP's main window: the live camera next to the settings, so measuring and calibrating happen in view. A
+	// camera shows itself; a nozzle shows the up-looking camera (offsets, tip calibration)
+	const liveView = $derived.by(() => {
+		if (!selected) return null;
+		const p = selected.split('.');
+		if (selKind === 'camera') {
+			const onHead = p[0] === 'heads';
+			return { id: p[p.length - 1], head: onHead ? p[1] : null, tool: null as string | null };
+		}
+		if (selKind === 'nozzle') {
+			const cams = (config.cameras as Obj | undefined) ?? {};
+			const up = Object.keys(cams).find((k) => (cams[k] as Obj)?.looking === 'up');
+			return up ? { id: up, head: null, tool: `nozzle/${p[p.length - 1]}` } : null;
+		}
+		return null;
+	});
 	const allTabs = $derived([
 		...layoutTabs.map((t) => ({ id: t.id, label: t.label })),
 		...(selType ? [{ id: '_all', label: 'All settings' }] : []),
@@ -358,7 +355,9 @@
 	{#if revision !== null}<Badge variant="outline" class="ml-auto font-mono">revision {revision}</Badge>{/if}
 </div>
 
-{#if loadError}<p class="mb-2 text-sm text-alarm">{loadError}</p>{/if}
+{#if loadError}
+	<Alert.Root variant="destructive" class="mb-3"><CircleAlert /><Alert.Title>The configuration couldn't be loaded</Alert.Title><Alert.Description>{loadError}</Alert.Description></Alert.Root>
+{/if}
 
 {#if adding}
 	<NewObjectDialog
@@ -403,17 +402,20 @@
 {/snippet}
 
 {#snippet feedback()}
-	{#if message}
-		<p class="flex items-center gap-1.5 text-sm {message.kind === 'ok' ? 'text-ok' : 'text-alarm'}">
-			{#if message.kind === 'ok'}<CircleCheck class="size-4 shrink-0" />{:else}<CircleX class="size-4 shrink-0" />{/if}{message.text}
-		</p>
-	{/if}
-	{#if problems.length}
-		<ul class="rounded-lg border border-alarm/30 bg-alarm/5 p-3 text-xs leading-5">
-			{#each problems as p (p.path + p.message)}
-				<li><span class="font-mono">{p.path}</span>: {p.message}</li>
-			{/each}
-		</ul>
+	{#if message?.kind === 'ok'}
+		<p class="flex items-center gap-1.5 text-sm text-ok"><CircleCheck class="size-4 shrink-0" />{message.text}</p>
+	{:else if message || problems.length}
+		<Alert.Root variant="destructive">
+			<CircleAlert />
+			<Alert.Title>{message?.text ?? 'Not valid'}</Alert.Title>
+			{#if problems.length}
+				<Alert.Description>
+					<ul class="mt-1 list-disc pl-4">
+						{#each problems as p (p.path + p.message)}<li><span class="font-mono">{p.path}</span>: {p.message}</li>{/each}
+					</ul>
+				</Alert.Description>
+			{/if}
+		</Alert.Root>
 	{/if}
 {/snippet}
 
@@ -497,36 +499,49 @@
 						</div>
 					{/if}
 
-					<!-- tabs, as OpenPnP's wizard tabs -->
-					<div class="flex flex-wrap gap-x-1 border-b">
-						{#each allTabs as t (t.id)}
-							<button
-								class="-mb-px border-b-2 px-3 py-1.5 text-sm transition-colors {objTab === t.id
-									? 'border-primary font-medium text-foreground'
-									: 'border-transparent text-muted-foreground hover:text-foreground'} {t.id.startsWith('_') ? 'italic' : ''}"
-								onclick={() => openTab(t.id)}>{t.label}</button
-							>
-						{/each}
-					</div>
+					<div class="grid items-start gap-4 {liveView ? '2xl:grid-cols-[minmax(0,1fr)_30rem] xl:grid-cols-[minmax(0,1fr)_24rem]' : ''}">
+						<div class="flex min-w-0 flex-col gap-4">
+							<!-- tabs, as OpenPnP's wizard tabs -->
+							<div class="flex flex-wrap gap-x-1 border-b">
+								{#each allTabs as t (t.id)}
+									<button
+										class="-mb-px border-b-2 px-3 py-1.5 text-sm transition-colors {objTab === t.id
+											? 'border-primary font-medium text-foreground'
+											: 'border-transparent text-muted-foreground hover:text-foreground'} {t.id.startsWith('_') ? 'italic' : ''}"
+										onclick={() => openTab(t.id)}>{t.label}</button
+									>
+								{/each}
+							</div>
 
-					{#if objTab === '_all' && selType}
-						<p class="text-xs text-muted-foreground">Every setting of the type, from its schema. Empty fields use the default shown greyed.</p>
-						<SchemaFields schema={selType.schema} defs={selType.schema.$defs ?? {}} bind:value={draft} hide={['type', ...(selKind === 'head' ? ['nozzles', 'cameras'] : [])]} />
-					{:else if objTab === '_source'}
-						<p class="text-xs text-muted-foreground">The object as JSON. Values may carry units, e.g. <code>"6000 mm/min"</code>.</p>
-						<textarea
-							class="min-h-96 w-full rounded-lg border border-input bg-well p-3 font-mono text-xs leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-							spellcheck="false"
-							bind:value={sourceText}
-							oninput={() => applySource()}
-						></textarea>
-						{#if sourceError}<p class="text-xs text-alarm">{sourceError}</p>{/if}
-					{:else}
-						{@const t = layoutTabs.find((x) => x.id === objTab)}
-						{#if t}
-							<LayoutTab groups={t.groups} {ctx} schema={selType?.schema} defs={selType?.schema.$defs ?? {}} bind:value={draft} {config} refs={refLists} saved={savedSelected} />
+							{#if objTab === '_all' && selType}
+								<p class="text-xs text-muted-foreground">Every setting of the type, from its schema. Empty fields use the default shown greyed.</p>
+								<SchemaFields schema={selType.schema} defs={selType.schema.$defs ?? {}} bind:value={draft} hide={['type', ...(selKind === 'head' ? ['nozzles', 'cameras'] : [])]} />
+							{:else if objTab === '_source'}
+								<p class="text-xs text-muted-foreground">The object as JSON. Values may carry units, e.g. <code>"6000 mm/min"</code>.</p>
+								<textarea
+									class="min-h-96 w-full rounded-lg border border-input bg-well p-3 font-mono text-xs leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+									spellcheck="false"
+									bind:value={sourceText}
+									oninput={() => applySource()}
+								></textarea>
+								{#if sourceError}<p class="text-xs text-alarm">{sourceError}</p>{/if}
+							{:else}
+								{@const t = layoutTabs.find((x) => x.id === objTab)}
+								{#if t}
+									<LayoutTab groups={t.groups} {ctx} schema={selType?.schema} defs={selType?.schema.$defs ?? {}} bind:value={draft} {config} refs={refLists} saved={savedSelected} />
+								{/if}
+							{/if}
+						</div>
+						{#if liveView}
+							<!-- the live camera stays in view while scrolling the settings -->
+							<div class="flex flex-col gap-1.5 xl:sticky xl:top-18">
+								<span class="eyebrow">Live: {liveView.id}{liveView.tool ? ` · ${liveView.tool.split('/')[1]} selected` : ''}</span>
+								{#key liveView.id}
+									<CameraView id={liveView.id} headMounted={!!liveView.head} head={liveView.head} tool={liveView.tool} />
+								{/key}
+							</div>
 						{/if}
-					{/if}
+					</div>
 
 					<div class="sticky bottom-0 -mx-4 flex flex-wrap items-center gap-2 border-t bg-card px-4 pt-3 pb-1">
 						<Button disabled={busy || !dirty} onclick={() => applyChanges(false)}><Check /> Apply</Button>
@@ -614,7 +629,11 @@
 				<p class="text-sm text-muted-foreground">No changes since the server started.</p>
 			{/if}
 			{#if historyMessage}
-				<p class="mt-2 text-sm {historyMessage.kind === 'ok' ? 'text-ok' : 'text-alarm'}">{historyMessage.text}</p>
+				{#if historyMessage.kind === 'ok'}
+					<p class="mt-2 flex items-center gap-1.5 text-sm text-ok"><CircleCheck class="size-4 shrink-0" />{historyMessage.text}</p>
+				{:else}
+					<Alert.Root variant="destructive" class="mt-2"><CircleAlert /><Alert.Title>Undo failed</Alert.Title><Alert.Description>{historyMessage.text}</Alert.Description></Alert.Root>
+				{/if}
 			{/if}
 		</Card.CardContent>
 	</Card.Card>

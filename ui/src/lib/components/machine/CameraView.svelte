@@ -7,9 +7,17 @@
 	import LowBandwidthToggle from './LowBandwidthToggle.svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
-	import { MousePointerClick, Crosshair, Ruler, LocateFixed, Check, X, LoaderCircle, TriangleAlert, RotateCw } from '@lucide/svelte';
+	import { MousePointerClick, Crosshair, Ruler, LocateFixed, Check, X, LoaderCircle, RotateCw, CameraOff } from '@lucide/svelte';
 
-	let { id, headMounted = false, tool = null }: { id: string; headMounted?: boolean; tool?: string | null } = $props();
+	let {
+		id,
+		headMounted = false,
+		head = null,
+		tool = null
+	}: { id: string; headMounted?: boolean; head?: string | null; tool?: string | null } = $props();
+
+	// where the camera's settings are in the configuration
+	const cfgPath = $derived(head ? `heads.${head}.cameras.${id}` : `cameras.${id}`);
 
 	const OVERLAYS = ['crosshair', 'scale', 'grid', 'info'] as const;
 	let overlays = $state<string[]>(['crosshair', 'scale']);
@@ -26,6 +34,21 @@
 	);
 
 	let cursor = $state<{ x: number; y: number } | null>(null);
+
+	// the camera can't deliver pictures: shown in place of the picture, like a monitor's "no signal"
+	const unavailable = $derived(!!s.last_error && !s.streaming);
+	const errorTitle = $derived(
+		String(s.last_error ?? '').startsWith('No camera') ? 'Camera not connected' : 'Camera not available'
+	);
+	let retrying = $state(false);
+	async function retry() {
+		retrying = true;
+		try {
+			await tinker.act('camera.reopen', { id });
+		} finally {
+			retrying = false;
+		}
+	}
 
 	// Up-looking machine cameras: move the selected nozzle over the camera, or capture the camera's location from
 	// where the nozzle is (centred and in focus), like OpenPnP's "capture tool location".
@@ -44,7 +67,7 @@
 	async function capture() {
 		if (!nozzle) return;
 		const r = await tinker.act<{ value: { x: number; y: number; z: number } }>('config.capture', {
-			field: `cameras.${id}.location`,
+			field: `${cfgPath}.location`,
 			from: 'location',
 			args: { object: nozzle }
 		});
@@ -58,24 +81,43 @@
 	let upp_result = $state<UppResult | null>(null);
 	const measuring = $derived(tinker.isBusy('config.capture'));
 
+	// head camera looking down: it moves itself over the board (no nozzle needed)
+	const headDown = $derived(headMounted && s.looking === 'down');
+
 	async function measureUpp() {
-		if (!nozzle) return;
+		if (!headDown && !nozzle) return;
 		upp_result = await tinker.act<UppResult>('config.capture', {
-			field: `cameras.${id}.units_per_pixel`,
+			field: `${cfgPath}.units_per_pixel`,
 			from: 'units_per_pixel',
-			args: { camera: id, object: nozzle, distance: 1.0 }
+			args: headDown ? { camera: id, distance: 1.0 } : { camera: id, object: nozzle, distance: 1.0 }
 		});
 	}
 
-	async function saveUpp() {
+	const orientationOff = $derived(
+		!!upp_result && (upp_result.details.mirrored_x || upp_result.details.mirrored_y || Math.abs(upp_result.details.rotation_deg) > 0.05)
+	);
+
+	async function saveUpp(fixOrientation = false) {
 		if (!upp_result) return;
 		const v = upp_result.value;
-		const r = await tinker.act('config.update', {
-			changes: [
-				{ op: 'set', path: `cameras.${id}.units_per_pixel.x`, value: v.x },
-				{ op: 'set', path: `cameras.${id}.units_per_pixel.y`, value: v.y }
-			]
-		});
+		const d = upp_result.details;
+		const changes: Record<string, unknown>[] = [
+			{ op: 'set', path: `${cfgPath}.units_per_pixel.x`, value: v.x },
+			{ op: 'set', path: `${cfgPath}.units_per_pixel.y`, value: v.y }
+		];
+		if (fixOrientation) {
+			// as for the settings page's "Apply orientation": mirrored in Y = flip about X, in X = flip about Y; the
+			// measured rotation is taken off
+			const t =
+				(await tinker.call<{ config: Record<string, unknown> }>('config.get', { path: cfgPath }).then(
+					(r) => (r.config.transform ?? {}) as Record<string, unknown>
+				)) ?? {};
+			if (d.mirrored_y) changes.push({ op: 'set', path: `${cfgPath}.transform.flip_x`, value: !t.flip_x });
+			if (d.mirrored_x) changes.push({ op: 'set', path: `${cfgPath}.transform.flip_y`, value: !t.flip_y });
+			if (Math.abs(d.rotation_deg) > 0.05)
+				changes.push({ op: 'set', path: `${cfgPath}.transform.rotate`, value: Math.round((Number(t.rotate ?? 0) - d.rotation_deg) * 100) / 100 });
+		}
+		const r = await tinker.act('config.update', { changes });
 		if (r) upp_result = null;
 	}
 
@@ -102,7 +144,7 @@
 
 	async function saveCapture() {
 		if (!captured) return;
-		const changes = (['x', 'y', 'z'] as const).map((k) => ({ op: 'set', path: `cameras.${id}.location.${k}`, value: captured![k] }));
+		const changes = (['x', 'y', 'z'] as const).map((k) => ({ op: 'set', path: `${cfgPath}.location.${k}`, value: captured![k] }));
 		const r = await tinker.act('config.update', { changes });
 		if (r) captured = null;
 	}
@@ -157,6 +199,16 @@
 				{s.width ?? '–'}×{s.height ?? '–'} · {fmt(s.fps, 0)} fps
 			</span>
 		</div>
+		{#if unavailable}
+			<div class="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-neutral-950 px-8 text-center">
+				<CameraOff class="size-8 text-white/35" />
+				<p class="text-sm font-medium text-white/85">{errorTitle}</p>
+				<p class="line-clamp-3 max-w-md text-xs leading-relaxed text-white/50" title={String(s.last_error)}>{s.last_error}</p>
+				<Button variant="outline" size="sm" class="mt-1 border-white/20 bg-white/5 text-white/85 hover:bg-white/10 hover:text-white" disabled={retrying} onclick={retry}>
+					<RotateCw class={retrying ? 'animate-spin' : ''} /> Try again
+				</Button>
+			</div>
+		{/if}
 		{#if cursor}
 			<span class="num pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded bg-primary px-2 py-0.5 text-[11px] font-semibold text-primary-foreground">
 				{movable ? 'Shift+click → ' : ''}X {fmt(cursor.x, 2)} Y {fmt(cursor.y, 2)}
@@ -208,19 +260,30 @@
 				</span>
 			</div>
 		{/if}
-		{#if upp_result}
-			{@const d = upp_result.details}
-			<div class="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-xs">
-				<span class="font-medium">Measured</span>
-				<span class="num">{fmt(upp?.x, 5)} × {fmt(upp?.y, 5)} → <b>{upp_result.value.x.toFixed(5)} × {upp_result.value.y.toFixed(5)}</b> mm/px</span>
-				<span class="text-muted-foreground">view {d.field_of_view_mm[0]} × {d.field_of_view_mm[1]} mm · rotated {d.rotation_deg}°</span>
-				{#if d.mirrored_x || d.mirrored_y}<span class="text-warn">mirrored in {d.mirrored_x ? 'X' : ''}{d.mirrored_y ? 'Y' : ''}: set {[d.mirrored_y ? 'flip X (vertical)' : '', d.mirrored_x ? 'flip Y (horizontal)' : ''].filter(Boolean).join(' and ')}</span>{/if}
-				<span class="ml-auto flex gap-1">
-					<Button size="sm" onclick={saveUpp}><Check /> Save</Button>
-					<Button variant="ghost" size="sm" onclick={() => (upp_result = null)}><X /> Cancel</Button>
-				</span>
-			</div>
-		{/if}
+	{/if}
+	{#if headDown}
+		<div class="flex flex-wrap items-center gap-1.5">
+			<span class="eyebrow mr-1">Calibrate</span>
+			<Button variant="outline" size="sm" disabled={!homed || measuring} onclick={measureUpp}
+				title="Move this camera 0.5 and 1 mm in X and Y over the board under it (any detail, in focus) and measure how far the picture moves">
+				{#if measuring}<LoaderCircle class="animate-spin" /> Measuring…{:else}<Ruler /> Measure mm/px{/if}
+			</Button>
+			<span class="text-xs text-muted-foreground">over a board with some detail, in focus</span>
+		</div>
+	{/if}
+	{#if upp_result}
+		{@const d = upp_result.details}
+		<div class="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-xs">
+			<span class="font-medium">Measured</span>
+			<span class="num">{fmt(upp?.x, 5)} × {fmt(upp?.y, 5)} → <b>{upp_result.value.x.toFixed(5)} × {upp_result.value.y.toFixed(5)}</b> mm/px</span>
+			<span class="text-muted-foreground">view {d.field_of_view_mm[0]} × {d.field_of_view_mm[1]} mm · rotated {d.rotation_deg}°</span>
+			{#if d.mirrored_x || d.mirrored_y}<span class="text-warn">mirrored in {d.mirrored_x ? 'X' : ''}{d.mirrored_y ? 'Y' : ''}: set {[d.mirrored_y ? 'flip X (vertical)' : '', d.mirrored_x ? 'flip Y (horizontal)' : ''].filter(Boolean).join(' and ')}</span>{/if}
+			<span class="ml-auto flex gap-1">
+				{#if orientationOff}<Button size="sm" onclick={() => saveUpp(true)}><Check /> Save + fix orientation</Button>{/if}
+				<Button size="sm" variant={orientationOff ? 'outline' : 'default'} onclick={() => saveUpp(false)}><Check /> Save{orientationOff ? ' mm/px only' : ''}</Button>
+				<Button variant="ghost" size="sm" onclick={() => (upp_result = null)}><X /> Cancel</Button>
+			</span>
+		</div>
 	{/if}
 	{#if tipCal && plot}
 		<div class="flex items-center gap-4 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-xs">
@@ -238,8 +301,5 @@
 			</div>
 			<Button variant="ghost" size="sm" class="ml-auto self-start" onclick={() => (tipCal = null)}><X /></Button>
 		</div>
-	{/if}
-	{#if s.last_error}
-		<p class="flex items-center gap-1.5 text-xs text-alarm"><TriangleAlert class="size-3.5" /> {s.last_error}</p>
 	{/if}
 </div>

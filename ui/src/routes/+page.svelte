@@ -204,7 +204,7 @@
 			{/snippet}
 			{#if viewCamera}
 				{#key viewCamera}
-					<CameraView id={viewCamera} headMounted={!!cam?.head} tool={(machine.selected_tool as string | null) ?? null} />
+					<CameraView id={viewCamera} headMounted={!!cam?.head} head={(cam?.head as string | null) ?? null} tool={(machine.selected_tool as string | null) ?? null} />
 				{/key}
 				{#if others.length}
 					<div class="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4">

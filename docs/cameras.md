@@ -139,6 +139,19 @@ weak WiFi ran at 5.5 Mbit/s) the frames back up in the network buffers and the p
 5 fps, half size and JPEG quality 60 (`?fps=5&scale=0.5&quality=60`, about 1/10 of the data). It's remembered per
 browser. Vision, measurements and clicks in the picture still use full-resolution frames.
 
+## Measuring mm/px
+
+On the camera's **Units per pixel** tab, **Measure** moves by `distance` (1 mm) in X and in Y and measures how far the
+picture moves (template matching), from the machine's own steps:
+
+- up-looking machine camera: with a nozzle, first moved to the camera's location (focus Z);
+- head camera: the camera moves over whatever is under it. Put a board with some detail (tracks, parts, text) in
+  focus under it; no fiducial is needed. It ends where it started.
+
+Mirror and rotation are reported too; **Apply orientation** sets the flips and rotation from them. With a strongly
+distorting lens, mm/px from Measure holds for the middle of the picture: the Advanced calibration below makes it right
+everywhere.
+
 ## Orientation of up-looking cameras
 
 Vision on up-looking cameras (tip calibration, later bottom vision) expects the image, after the camera's
